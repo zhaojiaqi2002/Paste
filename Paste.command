@@ -9,7 +9,7 @@ if [ -z "$NODE_BIN" ]; then
   NODE_BIN="$(command -v node || true)"
 fi
 if [ -z "$NODE_BIN" ]; then
-  for candidate in /opt/homebrew/bin/node /usr/local/bin/node "$HOME/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node"; do
+  for candidate in /opt/homebrew/bin/node /usr/local/bin/node; do
     [ -x "$candidate" ] && NODE_BIN="$candidate" && break
   done
 fi

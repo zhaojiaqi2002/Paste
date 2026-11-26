@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Paste</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+</head>
+<body>
+<div class="app">
+  <header class="bar">
+    <div class="brand">Paste</div>
+
+    <nav class="filters" id="filters" aria-label="分类"></nav>
+
+    <div class="bar-end">
+      <label class="search" id="searchWrap">
+        <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 13.6 13.6"/></svg>
+        <input id="q" type="text" placeholder="搜索" autocomplete="off" spellcheck="false" aria-label="搜索">
+        <kbd id="kbdHint">⌘K</kbd>
+      </label>
+      <button class="icon-btn" id="devicesBtn" aria-label="设备" aria-haspopup="dialog">
+        <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5.6h9.6M9.2 3.2l2.4 2.4-2.4 2.4"/><path d="M14 10.4H4.4M6.8 8l-2.4 2.4L6.8 12.8"/></svg>
+        <span class="dot" id="peerDot" hidden></span>
+      </button>
+    </div>
+  </header>
+
+  <main class="split" id="split">
+    <section class="list" id="list" tabindex="-1" aria-label="记录"></section>
+    <section class="detail" id="detail" aria-live="polite"></section>
+  </main>
+</div>
+
+<div class="popover" id="popover" hidden role="dialog"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div class="lightbox" id="lightbox" hidden aria-label="查看大图"><img id="lightboxImg" alt=""></div>
+<div class="dropzone" id="dropzone" hidden></div>
+
+<script id="boot" type="application/json">__BOOT__</script>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

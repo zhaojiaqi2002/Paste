@@ -1,0 +1,10 @@
+# Clipboard history and secrets are never committed: the default data
+# directory lives outside the repo (~/Library/Application Support/Paste).
+data/
+*.log
+
+# Local noise
+.DS_Store
+Thumbs.db
+node_modules/
+.env

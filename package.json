@@ -1,0 +1,17 @@
+{
+  "name": "paste",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A quiet clipboard for macOS and Windows. Files, not databases.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/main.js",
+    "open": "node bin/launch.js",
+    "stop": "node bin/stop.js",
+    "test": "node test/smoke.js"
+  },
+  "dependencies": {}
+}

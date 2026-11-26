@@ -6,10 +6,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export const APP = 'Paste';
-export const VERSION = '1.0.0';
-export const SCHEMA = 1;
-
 /** Sortable, collision-resistant id: ms timestamp in base36 + 3 random bytes. */
 export function newId() {
   return Date.now().toString(36) + crypto.randomBytes(3).toString('hex');
@@ -157,9 +153,6 @@ export function kindOf(name) {
   if (mime.startsWith('audio/')) return 'audio';
   return 'file';
 }
-
-/** The four user-facing categories, in the order the UI shows them. */
-export const TYPES = ['text', 'image', 'files', 'video'];
 
 /**
  * A clipboard entry's category. Files win over text because an OS file copy

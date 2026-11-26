@@ -144,5 +144,5 @@ export function createBundles({ dataDir, store }) {
     }
   }
 
-  return { create, read, writeBlob, commit, sweep, root };
+  return { create, read, writeBlob, commit, sweep };
 }

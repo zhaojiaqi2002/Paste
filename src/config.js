@@ -74,6 +74,6 @@ export function publicConfig(config) {
   };
 }
 
-export function publicPeer(peer) {
+function publicPeer(peer) {
   return { id: peer.id, name: peer.name, addedAt: peer.addedAt, lastSeen: peer.lastSeen || null };
 }

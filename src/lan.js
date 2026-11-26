@@ -327,5 +327,5 @@ export function createLan({ config, store, saveConfig, onChange, onProgress }) {
     }
   }
 
-  return { start, stop, peers, pair, send, remember, forget, discovered };
+  return { start, stop, peers, pair, send, remember, forget };
 }

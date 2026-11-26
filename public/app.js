@@ -25,7 +25,7 @@ const ICON = {
   plus: '<path d="M8 3.4v9.2M3.4 8h9.2"/>',
   download: '<path d="M8 2.9v7.2M4.9 7.3 8 10.4l3.1-3.1M3.1 13.1h9.8"/>',
   back: '<path d="M9.9 3.4 5.3 8l4.6 4.6"/>',
-  file: '<path d="M9.1 2.4H4.5c-.6 0-1.1.5-1.1 1.1v9c0 .6.5 1.1 1.1 1.1h7c.6 0 1.1-.5 1.1-1.1V5.7L9.1 2.4Z"/><path d="M9 2.6v3.1h3.2"/>',
+
   video: '<rect x="1.9" y="4.1" width="8.1" height="7.8" rx="1.7"/><path d="M10 7.2 13.9 5v6l-3.9-2.2"/>',
   image: '<rect x="2.3" y="3.1" width="11.4" height="9.8" rx="1.7"/><circle cx="5.9" cy="6.5" r="1.05"/><path d="M3 11.7 6.3 8.6l2.3 2.1 1.9-1.5 2.5 2.5"/>',
   text: '<path d="M3.4 4.2h9.2M3.4 8h9.2M3.4 11.8h5.4"/>',
@@ -41,20 +41,22 @@ const S = {
   hasMore: false,
   type: 'all',
   q: '',
-  selectedId: boot.items && boot.items[0] ? boot.items[0].id : null,
   // One selection set is the single source of truth for both single and multi
-  // selection; `selectedId` is only the focused item while exactly one is chosen.
+  // selection. `selectedId` is derived from it, never assigned.
   selection: new Set(boot.items && boot.items[0] ? [boot.items[0].id] : []),
   anchorId: boot.items && boot.items[0] ? boot.items[0].id : null,
   focusId: boot.items && boot.items[0] ? boot.items[0].id : null,
   collapsed: false,
   device: boot.device,
   peers: boot.peers || [],
-  capture: boot.capture,
-  stats: boot.stats,
-  scrollTop: 0,
   seq: 0,
 };
+
+Object.defineProperty(S, 'selectedId', {
+  get() {
+    return S.selection.size === 1 ? [...S.selection][0] : null;
+  },
+});
 
 const bodies = new Map();
 let toastTimer = null;
@@ -177,8 +179,26 @@ function highlighted(text, query) {
   return frag;
 }
 
+/**
+ * JSON in, JSON out, never throws: every caller wants `{ ok, data }` and a
+ * message to show. File uploads keep using fetch directly.
+ */
+async function api(path, options = {}) {
+  const opts = { ...options };
+  if (typeof opts.body === 'string') {
+    opts.headers = { 'content-type': 'application/json', ...(opts.headers || {}) };
+  }
+  try {
+    const res = await fetch(path, opts);
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data };
+  } catch {
+    return { ok: false, status: 0, data: {} };
+  }
+}
+
 function openPermissionSettings() {
-  fetch('/api/system/fda', { method: 'POST' }).catch(() => toast('无法打开系统设置'));
+  api('/api/system/fda', { method: 'POST' });
 }
 
 function toast(message, options = {}) {
@@ -389,7 +409,6 @@ function markSelection() {
 
 function setSelection(ids, options = {}) {
   S.selection = new Set(ids);
-  S.selectedId = S.selection.size === 1 ? [...S.selection][0] : null;
   if (options.anchor !== undefined) S.anchorId = options.anchor;
   else if (!S.selection.size) S.anchorId = null;
   markSelection();
@@ -411,7 +430,6 @@ function toggleSelect(id) {
     S.anchorId = id;
   }
   S.selection = next;
-  S.selectedId = next.size === 1 ? [...next][0] : null;
   S.focusId = id;
   markSelection();
   renderDetail();
@@ -516,17 +534,12 @@ function noteField(item) {
   const commit = async () => {
     const value = input.value.trim();
     if (value === (item.note || '')) return;
-    try {
-      const res = await fetch(`/api/items/${item.id}`, {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ note: value }),
-      });
-      const data = await res.json();
-      if (data.item) patchItem(data.item);
-    } catch {
-      toast('备注保存失败');
-    }
+    const { ok, data } = await api(`/api/items/${item.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ note: value }),
+    });
+    if (ok && data.item) patchItem(data.item);
+    else toast('备注保存失败');
   };
   input.addEventListener('blur', commit);
   input.addEventListener('keydown', (event) => {
@@ -572,8 +585,7 @@ function missingNotice(item) {
       type: 'button',
       onclick: async (event) => {
         event.currentTarget.disabled = true;
-        const res = await fetch(`/api/items/${item.id}/import`, { method: 'POST' });
-        const data = await res.json().catch(() => ({}));
+        const { data } = await api(`/api/items/${item.id}/import`, { method: 'POST' });
         event.currentTarget.disabled = false;
         if (data.item) patchItem(data.item);
         toast(data.item && !data.item.missing ? '已读取原始文件' : '仍然无法读取，请先授权');
@@ -613,19 +625,31 @@ function countByType(items) {
   return [...counts].map(([type, n]) => `${n} ${TYPE_LABEL[type] || type}`).join(' · ');
 }
 
+/** The three actions a multi-selection always offers, in both layouts. */
+function bulkActionButtons(items, compact) {
+  const cls = compact ? 'bulkbar-btn' : 'bulk-btn';
+  return [
+    el('button', { class: cls, type: 'button', onclick: () => copySelection() }, '复制'),
+    el('button', {
+      class: cls,
+      type: 'button',
+      onclick: (event) => { event.stopPropagation(); openSendMenu(event.currentTarget, items); },
+    }, '发送'),
+    el('button', {
+      class: `${cls} danger`,
+      type: 'button',
+      onclick: () => deleteItems(items.map((item) => item.id)),
+    }, '删除'),
+  ];
+}
+
 function bulkPanel() {
   const items = selectedItems();
   return el('div', { class: 'bulk' },
     el('div', { class: 'bulk-count' }, `${items.length} 项`),
     el('div', { class: 'bulk-sub' }, countByType(items)),
     el('div', { class: 'bulk-actions' },
-      el('button', { class: 'bulk-btn', type: 'button', onclick: () => copySelection() }, '复制'),
-      el('button', {
-        class: 'bulk-btn',
-        type: 'button',
-        onclick: (event) => { event.stopPropagation(); openSendMenu(event.currentTarget, items); },
-      }, '发送'),
-      el('button', { class: 'bulk-btn danger', type: 'button', onclick: () => deleteItems(items.map((item) => item.id)) }, '删除'),
+      ...bulkActionButtons(items, false),
       el('span', { class: 'bulk-sep' }),
       el('button', { class: 'bulk-link', type: 'button', onclick: () => selectAllVisible() }, '全选'),
       el('button', { class: 'bulk-link', type: 'button', onclick: () => clearSelection() }, '取消'),
@@ -639,20 +663,14 @@ function renderBulkBar() {
   const bar = $('#bulkbar');
   if (!bar) return;
   const items = selectedItems();
-  const show = S.collapsed && items.length > 1 && !document.body.classList.contains('booting');
+  const show = S.collapsed && items.length > 1;
   bar.hidden = !show;
   bar.replaceChildren();
   if (!show) return;
   bar.append(
     el('span', { class: 'bulkbar-count' }, `${items.length} 项`),
     el('span', { class: 'bulkbar-sep' }),
-    el('button', { class: 'bulkbar-btn', type: 'button', onclick: () => copySelection() }, '复制'),
-    el('button', {
-      class: 'bulkbar-btn',
-      type: 'button',
-      onclick: (event) => { event.stopPropagation(); openSendMenu(event.currentTarget, items); },
-    }, '发送'),
-    el('button', { class: 'bulkbar-btn danger', type: 'button', onclick: () => deleteItems(items.map((item) => item.id)) }, '删除'),
+    ...bulkActionButtons(items, true),
     el('button', { class: 'bulkbar-close', type: 'button', 'aria-label': '取消选择', onclick: () => clearSelection() }, icon('close')),
   );
 }
@@ -799,10 +817,8 @@ async function loadBody(item) {
 }
 
 function openInPlayer(item) {
-  fetch(`/api/items/${item.id}/open`, { method: 'POST' })
-    .then((res) => res.json())
-    .then((data) => { if (!data.ok) toast(data.error || '无法打开'); })
-    .catch(() => toast('无法打开'));
+  api(`/api/items/${item.id}/open`, { method: 'POST' })
+    .then(({ data }) => { if (!data.ok) toast(data.error || '无法打开'); });
 }
 
 /** A codec the browser cannot decode still gets a still frame and a way out. */
@@ -837,19 +853,10 @@ function closeLightbox() {
 // ---------------------------------------------------------------- actions
 
 async function copyItem(item) {
-  try {
-    const res = await fetch(`/api/items/${item.id}/copy`, { method: 'POST' });
-    const data = await res.json();
-    if (data.ok) {
-      toast(data.skipped ? `已复制（${data.skipped} 个文件不可读）` : '已复制');
-    } else if (data.reason === 'unreadable') {
-      toast(data.error, { action: '授权', duration: 9000, onAction: openPermissionSettings });
-    } else {
-      toast(data.error || '复制失败');
-    }
-  } catch {
-    toast('复制失败');
-  }
+  const { data } = await api(`/api/items/${item.id}/copy`, { method: 'POST' });
+  if (data.ok) toast(data.skipped ? `已复制（${data.skipped} 个文件不可读）` : '已复制');
+  else if (data.reason === 'unreadable') toast(data.error, { action: '授权', duration: 9000, onAction: openPermissionSettings });
+  else toast(data.error || '复制失败');
 }
 
 async function copySelection() {
@@ -859,39 +866,28 @@ async function copySelection() {
     await copyItem(items[0]);
     return;
   }
-  try {
-    const res = await fetch('/api/items/bulk-copy', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ids: items.map((item) => item.id) }),
-    });
-    const data = await res.json();
-    if (data.ok && !data.error) {
-      const skipped = data.skipped ? `（${data.skipped} 个不可读）` : '';
-      toast(data.mode === 'files' ? `已复制 ${data.count} 个文件${skipped}` : `已复制 ${data.count} 条文本`);
-    } else if (data.reason === 'unreadable') {
-      toast(data.error, { action: '授权', duration: 9000, onAction: openPermissionSettings });
-    } else {
-      toast(data.error || '复制失败');
-    }
-  } catch {
-    toast('复制失败');
+  const { data } = await api('/api/items/bulk-copy', {
+    method: 'POST',
+    body: JSON.stringify({ ids: items.map((item) => item.id) }),
+  });
+  if (data.ok && !data.error) {
+    const skipped = data.skipped ? `（${data.skipped} 个不可读）` : '';
+    toast(data.mode === 'files' ? `已复制 ${data.count} 个文件${skipped}` : `已复制 ${data.count} 条文本`);
+  } else if (data.reason === 'unreadable') {
+    toast(data.error, { action: '授权', duration: 9000, onAction: openPermissionSettings });
+  } else {
+    toast(data.error || '复制失败');
   }
 }
 
 async function deleteItems(ids) {
   if (!ids.length) return;
-  let removed = [];
-  try {
-    const res = await fetch('/api/items/bulk-delete', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ids }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'failed');
-    removed = data.ids || [];
-  } catch {
+  const { ok, data } = await api('/api/items/bulk-delete', {
+    method: 'POST',
+    body: JSON.stringify({ ids }),
+  });
+  const removed = (ok && data.ids) || [];
+  if (!ok) {
     toast('删除失败');
     return;
   }
@@ -916,20 +912,12 @@ async function deleteItems(ids) {
     action: '撤销',
     duration: 12000,
     onAction: async () => {
-      await fetch('/api/items/bulk-restore', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ids: removed }),
-      });
+      await api('/api/items/bulk-restore', { method: 'POST', body: JSON.stringify({ ids: removed }) });
       await load();
       setSelection(removed);
       toast('已恢复');
     },
   });
-}
-
-function copySelected() {
-  copySelection();
 }
 
 function deleteSelected() {
@@ -939,21 +927,15 @@ function deleteSelected() {
 async function sendItems(items, peer) {
   if (!items || !items.length) return;
   toast(items.length > 1 ? `正在发送 ${items.length} 项到 ${peer.name}` : `正在发送到 ${peer.name}`);
-  try {
-    const res = await fetch(`/api/peers/${peer.id}/send`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ itemIds: items.map((item) => item.id) }),
-    });
-    const data = await res.json();
-    if (data.ok) {
-      toast(items.length > 1 ? `已发送 ${data.sent} 项到 ${peer.name}` : `已发送到 ${peer.name}`);
-    } else {
-      const first = data.failed && data.failed[0];
-      toast((first && first.error) || data.error || '发送失败');
-    }
-  } catch {
-    toast('发送失败');
+  const { data } = await api(`/api/peers/${peer.id}/send`, {
+    method: 'POST',
+    body: JSON.stringify({ itemIds: items.map((item) => item.id) }),
+  });
+  if (data.ok) {
+    toast(items.length > 1 ? `已发送 ${data.sent} 项到 ${peer.name}` : `已发送到 ${peer.name}`);
+  } else {
+    const first = data.failed && data.failed[0];
+    toast((first && first.error) || data.error || '发送失败');
   }
 }
 
@@ -1038,7 +1020,7 @@ function renderDevices() {
         class: 'ghost',
         type: 'button',
         onclick: async () => {
-          await fetch(`/api/peers/${peer.id}`, { method: 'DELETE' });
+          await api(`/api/peers/${peer.id}`, { method: 'DELETE' });
           toast(`已解除 ${peer.name}`);
           closePopover();
         },
@@ -1120,13 +1102,11 @@ function renderDevices() {
   name.addEventListener('blur', async () => {
     const value = name.value.trim();
     if (!value || value === S.device.name) return;
-    const res = await fetch('/api/device', {
+    const { ok, data } = await api('/api/device', {
       method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: value }),
     });
-    if (res.ok) {
-      const data = await res.json();
+    if (ok) {
       S.device = data.device;
       toast('已重命名');
     }
@@ -1138,25 +1118,19 @@ function renderDevices() {
 
 async function pairWith({ host, port, code }) {
   toast('正在配对');
-  try {
-    const res = await fetch('/api/peers/pair', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ host, port, code }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      toast(data.error || '配对失败');
-      return;
-    }
-    S.peers = data.peers;
-    pairingFor = null;
-    manualOpen = false;
-    closePopover();
-    toast(`已配对 ${data.peer.name}`);
-  } catch {
-    toast('配对失败');
+  const { ok, data } = await api('/api/peers/pair', {
+    method: 'POST',
+    body: JSON.stringify({ host, port, code }),
+  });
+  if (!ok) {
+    toast(data.error || '配对失败');
+    return;
   }
+  S.peers = data.peers;
+  pairingFor = null;
+  manualOpen = false;
+  closePopover();
+  toast(`已配对 ${data.peer.name}`);
 }
 
 // ---------------------------------------------------------------- data flow
@@ -1165,9 +1139,13 @@ async function load() {
   const seq = ++S.seq;
   const params = new URLSearchParams({ type: S.type, q: S.q, limit: '200' });
   try {
-    const res = await fetch(`/api/items?${params}`);
-    const data = await res.json();
+    const { ok, data } = await api(`/api/items?${params}`);
     if (seq !== S.seq) return;
+    // A failed refresh must not blank the list the user is looking at.
+    if (!ok || !Array.isArray(data.items)) {
+      toast('无法连接');
+      return;
+    }
     S.items = data.items || [];
     S.total = data.total || 0;
     S.hasMore = !!data.hasMore;
@@ -1178,11 +1156,9 @@ async function load() {
     if (kept.length) {
       S.selection = new Set(kept);
       if (!S.selection.has(S.anchorId)) S.anchorId = kept[0];
-      S.selectedId = kept.length === 1 ? kept[0] : null;
     } else {
       S.selection = new Set(S.items.length ? [S.items[0].id] : []);
       S.anchorId = S.items.length ? S.items[0].id : null;
-      S.selectedId = S.items.length ? S.items[0].id : null;
     }
     renderList();
     renderDetail();
@@ -1195,9 +1171,9 @@ async function load() {
 async function loadMore() {
   const params = new URLSearchParams({ type: S.type, q: S.q, limit: '200', offset: String(S.items.length) });
   try {
-    const res = await fetch(`/api/items?${params}`);
-    const data = await res.json();
-    S.items = S.items.concat(data.items || []);
+    const { ok, data } = await api(`/api/items?${params}`);
+    if (!ok || !Array.isArray(data.items)) return;
+    S.items = S.items.concat(data.items);
     S.hasMore = !!data.hasMore;
     renderList();
   } catch {
@@ -1378,7 +1354,7 @@ document.addEventListener('keydown', (event) => {
 
   if (event.key === 'Enter' && S.selection.size) {
     event.preventDefault();
-    copySelected();
+    copySelection();
     return;
   }
 
@@ -1432,11 +1408,10 @@ window.addEventListener('drop', async (event) => {
 
   toast(`正在记录 ${files.length} 个文件`);
   try {
-    const created = await fetch('/api/bundles', {
+    const created = (await api('/api/bundles', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ count: files.length }),
-    }).then((res) => res.json());
+    })).data;
 
     for (let i = 0; i < files.length; i++) {
       const res = await fetch(`/api/bundles/${created.bundle}/blob?slot=${i}&name=${encodeURIComponent(files[i].name)}`, {
@@ -1447,7 +1422,7 @@ window.addEventListener('drop', async (event) => {
       if (!res.ok) throw new Error('upload failed');
     }
 
-    const done = await fetch(`/api/bundles/${created.bundle}/commit`, { method: 'POST', body: '{}' }).then((res) => res.json());
+    const done = (await api(`/api/bundles/${created.bundle}/commit`, { method: 'POST', body: '{}' })).data;
     toast(done.duplicate ? '此内容已记录' : '已记录');
   } catch {
     toast('记录失败');
@@ -1461,11 +1436,8 @@ setCollapsed(localStorage.getItem('paste.collapsed') === '1');
 updatePeerDot();
 connect();
 
-// Refresh metadata quietly; the first paint already came from the server.
-fetch('/api/state')
-  .then((res) => res.json())
-  .then((data) => {
-    S.capture = data.capture;
-    S.stats = data.stats;
-  })
-  .catch(() => {});
+// Refresh peers quietly; the first paint already came from the server.
+api('/api/state').then(({ data }) => {
+  if (Array.isArray(data.peers)) S.peers = data.peers;
+  updatePeerDot();
+});

@@ -18,12 +18,55 @@ import path from 'node:path';
 import { makePoster, makeThumb, toPng } from './thumb.js';
 import { search, snippetOf } from './search.js';
 import {
-  browserImage, classify, dayKey, dayKeyBefore, extOf, imageSize, isDir, mimeOf,
+  browserImage, classify, dayKey, dayKeyBefore, imageSize, isDir, mimeOf,
   newId, readJson, safeName, sha1, sniffImageFile, writeJsonAtomic,
 } from './util.js';
 
 const PREVIEW_CHARS = 2000;
 const LIST_PREVIEW_CHARS = 600;
+
+
+/**
+ * Normalise a stored image blob. macOS pasteboards (and some apps) hand out
+ * TIFF under a .png name, which no browser can decode, so the real format is
+ * decided by magic bytes and converted when needed. `resolvePng` maps a wanted
+ * file name onto one that is free inside the item.
+ */
+async function normalizeImageBlob(dir, storedRel, name, resolvePng = (n) => n) {
+  let stored = storedRel;
+  let outName = name;
+  let kind = sniffImageFile(path.join(dir, stored));
+  let converted = false;
+
+  if (!browserImage(kind)) {
+    const stem = outName.replace(/\.[^.]+$/, '') || 'image';
+    const pngName = resolvePng(`${stem}.png`);
+    const conv = path.join(dir, 'files', `${pngName}.tmp.png`);
+    if (await toPng(path.join(dir, stored), conv)) {
+      fs.rmSync(path.join(dir, stored), { force: true });
+      fs.renameSync(conv, path.join(dir, 'files', pngName));
+      stored = `files/${pngName}`;
+      outName = pngName;
+      kind = 'png';
+      converted = true;
+    } else {
+      fs.rmSync(conv, { force: true });
+    }
+  }
+
+  const abs = path.join(dir, stored);
+  const buf = fs.readFileSync(abs);
+  const dims = browserImage(kind) ? imageSize(buf) : null;
+  return {
+    stored,
+    name: outName,
+    size: buf.length,
+    mime: mimeOf(outName),
+    w: dims ? dims.w : null,
+    h: dims ? dims.h : null,
+    converted,
+  };
+}
 
 export class Store extends EventEmitter {
   constructor(dataDir, options = {}) {
@@ -176,45 +219,21 @@ export class Store extends EventEmitter {
           }
 
           let storedName = target;
-          let finalMime = mime;
           let size = fs.statSync(dest).size;
+          let finalMime = mime;
           let w = null;
           let h = null;
 
           if (mime.startsWith('image/')) {
-            const kind = sniffImageFile(dest);
-            let pngAbs = dest;
-            let converted = browserImage(kind);
-
-            if (!converted) {
-              // The real format is not something a browser renders (TIFF from a
-              // pasteboard, BMP, …): convert, then keep a .png name.
-              const stem = target.replace(/\.[^.]+$/, '') || 'image';
-              used.delete(target.toLowerCase());
-              const pngName = unique(`${stem}.png`);
-              const conv = path.join(dir, 'files', `${pngName}.tmp.png`);
-              if (await toPng(dest, conv)) {
-                fs.rmSync(dest, { force: true });
-                const finalAbs = path.join(dir, 'files', pngName);
-                fs.renameSync(conv, finalAbs);
-                pngAbs = finalAbs;
-                storedName = pngName;
-                converted = true;
-              } else {
-                fs.rmSync(conv, { force: true });
-                used.add(target.toLowerCase());
-              }
-            }
-
-            if (converted) {
-              const buf = fs.readFileSync(pngAbs);
-              size = buf.length;
-              finalMime = kind === 'png' ? 'image/png' : finalMime;
-              const dims = imageSize(buf);
-              if (dims) { w = dims.w; h = dims.h; }
-            } else {
-              finalMime = mimeOf(storedName);
-            }
+            // Free the provisional name so a converted blob can keep it.
+            used.delete(target.toLowerCase());
+            const normal = await normalizeImageBlob(dir, `files/${target}`, target, (candidate) => unique(candidate));
+            used.add(normal.name.toLowerCase());
+            storedName = normal.name;
+            size = normal.size;
+            finalMime = normal.mime;
+            w = normal.w;
+            h = normal.h;
           }
 
           stored.push({ name: storedName, stored: `files/${storedName}`, size, mime: finalMime, w, h });
@@ -409,26 +428,13 @@ export class Store extends EventEmitter {
       file.mime = mimeOf(file.name);
 
       if (file.mime.startsWith('image/')) {
-        let finalRel = file.stored;
-        if (sniffImageFile(dest) !== 'png') {
-          const stem = target.replace(/\.[^.]+$/, '') || 'image';
-          const pngName = `${stem}.png`;
-          const conv = path.join(dir, 'files', `${stem}.conv.png`);
-          if (await toPng(dest, conv)) {
-            fs.rmSync(dest, { force: true });
-            fs.renameSync(conv, path.join(dir, 'files', pngName));
-            finalRel = `files/${pngName}`;
-            file.name = pngName;
-            file.stored = finalRel;
-          }
-        }
-        const abs = path.join(dir, finalRel);
-        const buf = fs.readFileSync(abs);
-        const dims = imageSize(buf);
-        file.size = buf.length;
-        file.mime = 'image/png';
-        file.w = dims ? dims.w : null;
-        file.h = dims ? dims.h : null;
+        const normal = await normalizeImageBlob(dir, file.stored, file.name);
+        file.stored = normal.stored;
+        file.name = normal.name;
+        file.size = normal.size;
+        file.mime = normal.mime;
+        file.w = normal.w;
+        file.h = normal.h;
       }
       changed = true;
     }
@@ -597,15 +603,5 @@ export function summarize(meta) {
     poster: !!meta.poster,
     note: meta.note || '',
     missing: meta.missing || 0,
-  };
-}
-
-/** Wire format for LAN transfer: paths become blob descriptors. */
-export function portable(meta) {
-  return {
-    type: meta.type,
-    createdAt: meta.createdAt,
-    chars: meta.chars || 0,
-    files: (meta.files || []).map((f) => ({ name: f.name, size: f.size, mime: f.mime, w: f.w || null, h: f.h || null })),
   };
 }

@@ -4,19 +4,6 @@
 const MAX_TERMS = 8;
 const CJK = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/;
 
-function haystack(entry) {
-  if (entry._hay) return entry._hay;
-  const parts = [entry.preview || ''];
-  for (const f of entry.files || []) parts.push(f.name);
-  parts.push(entry.day, typeLabel(entry.type));
-  entry._hay = parts.join('\n').toLowerCase();
-  return entry._hay;
-}
-
-function typeLabel(type) {
-  return { text: '文本 text', image: '图片 image', files: '文件 files', video: '视频 video' }[type] || '';
-}
-
 function splitTerms(query) {
   const raw = String(query || '').trim().toLowerCase();
   if (!raw) return [];
@@ -28,9 +15,10 @@ function splitTerms(query) {
 
 /**
  * Every term must match (AND). Score rewards phrase hits, word-start hits and
- * recent items; ties fall back to newest first.
+ * recent items; ties fall back to newest first. `hayOf` supplies the searchable
+ * text for an entry (the store passes its full-body cache).
  */
-export function search(entries, query, hayOf = haystack) {
+export function search(entries, query, hayOf) {
   const terms = splitTerms(query);
   if (!terms.length) return entries;
 
@@ -55,29 +43,6 @@ export function search(entries, query, hayOf = haystack) {
 
   scored.sort((a, b) => b.score - a.score || b.entry.createdAt - a.entry.createdAt);
   return scored.map((s) => s.entry);
-}
-
-/** Index ranges for highlighting the first occurrence of each term. */
-export function ranges(text, query) {
-  const out = [];
-  const hay = String(text || '').toLowerCase();
-  for (const term of splitTerms(query)) {
-    let from = 0;
-    for (let i = 0; i < 20; i++) {
-      const at = hay.indexOf(term, from);
-      if (at < 0) break;
-      out.push([at, at + term.length]);
-      from = at + term.length;
-    }
-  }
-  out.sort((a, b) => a[0] - b[0]);
-  const merged = [];
-  for (const range of out) {
-    const last = merged[merged.length - 1];
-    if (last && range[0] <= last[1]) last[1] = Math.max(last[1], range[1]);
-    else merged.push([...range]);
-  }
-  return merged;
 }
 
 /**

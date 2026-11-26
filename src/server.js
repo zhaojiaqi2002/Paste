@@ -236,6 +236,16 @@ export function createServer({ config, dataDir, store, bundles, lan, capture, sa
 
   // ---------------------------------------------------------------- local API
 
+  // Route index for the loopback session API:
+  //   GET    /api/state
+  //   GET    /api/items                    POST /api/items
+  //   GET    /api/items/:id                PATCH (note) / DELETE
+  //   POST   /api/items/:id/{copy,restore,import,open}
+  //   GET    /api/items/:id/{body,thumb,poster,file/:i}
+  //   POST   /api/items/{bulk-delete,bulk-restore,bulk-copy}
+  //   POST   /api/bundles                  PUT /api/bundles/:id/blob   POST /api/bundles/:id/commit
+  //   PATCH  /api/device                   POST /api/peers/pair       DELETE /api/peers/:id
+  //   POST   /api/peers/:id/send           POST /api/system/fda
   async function handleApi(req, res, pathname, url) {
     const method = req.method;
     const segments = pathname.split('/').filter(Boolean); // ['api', ...]
@@ -677,5 +687,5 @@ export function createServer({ config, dataDir, store, bundles, lan, capture, sa
   }, 25000);
   heartbeat.unref?.();
 
-  return { start, stop, broadcast, session };
+  return { start, stop, broadcast };
 }

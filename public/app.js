@@ -32,6 +32,7 @@ const ICON = {
   check: '<path d="M3.4 8.5 6.5 11.6 12.7 4.9"/>',
   paste: '<rect x="4.1" y="3.3" width="7.8" height="10.2" rx="1.9"/><path d="M6.2 3.3v-.8c0-.4.4-.8.8-.8h2c.4 0 .8.4.8.8v.8"/>',
   search: '<circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 13.6 13.6"/>',
+  close: '<path d="M4.2 4.2 11.8 11.8M11.8 4.2 4.2 11.8"/>',
 };
 
 const S = {
@@ -41,6 +42,12 @@ const S = {
   type: 'all',
   q: '',
   selectedId: boot.items && boot.items[0] ? boot.items[0].id : null,
+  // One selection set is the single source of truth for both single and multi
+  // selection; `selectedId` is only the focused item while exactly one is chosen.
+  selection: new Set(boot.items && boot.items[0] ? [boot.items[0].id] : []),
+  anchorId: boot.items && boot.items[0] ? boot.items[0].id : null,
+  focusId: boot.items && boot.items[0] ? boot.items[0].id : null,
+  collapsed: false,
   device: boot.device,
   peers: boot.peers || [],
   capture: boot.capture,
@@ -260,24 +267,55 @@ function rowFor(item) {
     sub = el('div', { class: 'row-sub' }, `${item.files.length > 1 ? `${item.files.length} 个文件 · ` : ''}${bytes(item.size)}${item.missing ? ' · 未读取' : ''}`);
   }
 
+  const selected = S.selection.has(item.id);
   const row = el(
-    'button',
+    'div',
     {
       class: media ? 'row has-media' : 'row',
-      type: 'button',
+      role: 'option',
+      tabindex: '-1',
       dataset: { id: item.id },
-      'aria-selected': String(S.selectedId === item.id),
+      'aria-selected': String(selected),
       title: TYPE_LABEL[item.type] || '',
     },
+    el('span', { class: 'check', role: 'checkbox', 'aria-checked': String(selected) }, icon('check')),
     media,
     el('div', { class: 'row-main' }, title, sub),
+    el('div', { class: 'row-actions' },
+      el('button', {
+        class: 'act',
+        type: 'button',
+        'aria-label': '复制',
+        title: '复制',
+        onclick: (event) => { event.stopPropagation(); copyItem(item); },
+      }, icon('copy')),
+      S.collapsed ? el('button', {
+        class: 'act danger',
+        type: 'button',
+        'aria-label': '删除',
+        title: '删除',
+        onclick: (event) => { event.stopPropagation(); deleteItems([item.id]); },
+      }, icon('trash')) : null,
+    ),
     el('div', { class: 'row-time' }, hhmm(item.createdAt)),
   );
 
-  row.addEventListener('click', () => select(item.id, { open: true }));
-  row.addEventListener('dblclick', async () => {
+  row.addEventListener('click', (event) => {
+    if (event.target.closest('.check')) {
+      event.stopPropagation();
+      toggleSelect(item.id);
+      return;
+    }
+    if (event.target.closest('.row-actions')) return;
+    if (event.metaKey || event.ctrlKey) { toggleSelect(item.id); return; }
+    if (event.shiftKey) { extendSelect(item.id); return; }
+    select(item.id, { open: true });
+  });
+
+  row.addEventListener('dblclick', (event) => {
+    if (event.target.closest('.row-actions') || event.target.closest('.check')) return;
     select(item.id);
-    await copyItem(item);
+    copyItem(item);
   });
   return row;
 }
@@ -322,33 +360,101 @@ function renderList() {
   }
 }
 
+function scrollRowIntoView(id) {
+  const row = $(`#list .row[data-id="${CSS.escape(id)}"]`);
+  if (row) row.scrollIntoView({ block: 'nearest' });
+}
+
 function markSelection() {
-  for (const row of $('#list').querySelectorAll('.row[data-id]')) {
-    row.setAttribute('aria-selected', String(row.dataset.id === S.selectedId));
+  const list = $('#list');
+  for (const row of list.querySelectorAll('.row[data-id]')) {
+    const on = S.selection.has(row.dataset.id);
+    row.setAttribute('aria-selected', String(on));
+    const check = row.querySelector('.check');
+    if (check) check.setAttribute('aria-checked', String(on));
   }
+  list.classList.toggle('selecting', S.selection.size > 1);
+  renderBulkBar();
+}
+
+function setSelection(ids, options = {}) {
+  S.selection = new Set(ids);
+  S.selectedId = S.selection.size === 1 ? [...S.selection][0] : null;
+  if (options.anchor !== undefined) S.anchorId = options.anchor;
+  else if (!S.selection.size) S.anchorId = null;
+  markSelection();
+  renderDetail();
 }
 
 function select(id, options = {}) {
-  if (S.selectedId === id && !options.force) {
-    if (options.open) $('#split').classList.add('detail-open');
-    return;
-  }
-  S.selectedId = id;
-  markSelection();
-  renderDetail();
-  if (options.scroll !== false) {
-    const row = $(`#list .row[data-id="${CSS.escape(id)}"]`);
-    if (row) row.scrollIntoView({ block: 'nearest' });
-  }
+  S.focusId = id || null;
+  setSelection(id ? [id] : [], { anchor: id || null });
+  if (options.scroll !== false && id) scrollRowIntoView(id);
   if (options.open) $('#split').classList.add('detail-open');
 }
 
-function moveSelection(delta) {
+function toggleSelect(id) {
+  const next = new Set(S.selection);
+  if (next.has(id)) next.delete(id);
+  else {
+    next.add(id);
+    S.anchorId = id;
+  }
+  S.selection = next;
+  S.selectedId = next.size === 1 ? [...next][0] : null;
+  S.focusId = id;
+  markSelection();
+  renderDetail();
+  scrollRowIntoView(id);
+}
+
+function extendSelect(id) {
+  const ids = S.items.map((item) => item.id);
+  const target = ids.indexOf(id);
+  if (target < 0) return;
+  let anchorIndex = ids.indexOf(S.anchorId);
+  if (anchorIndex < 0) anchorIndex = target;
+  const from = Math.min(anchorIndex, target);
+  const to = Math.max(anchorIndex, target);
+  S.anchorId = ids[anchorIndex];
+  S.focusId = id;
+  setSelection(ids.slice(from, to + 1), { anchor: S.anchorId });
+  scrollRowIntoView(id);
+}
+
+function selectAllVisible() {
   if (!S.items.length) return;
-  let index = S.items.findIndex((item) => item.id === S.selectedId);
+  setSelection(S.items.map((item) => item.id), { anchor: S.anchorId || S.items[0].id });
+}
+
+function clearSelection() {
+  if (S.selection.size > 1) {
+    const keep = S.anchorId && S.selection.has(S.anchorId) ? S.anchorId : [...S.selection][0];
+    select(keep);
+    scrollRowIntoView(keep);
+  } else {
+    select(null);
+  }
+}
+
+function selectedItems() {
+  const byId = new Map(S.items.map((item) => [item.id, item]));
+  return [...S.selection].map((id) => byId.get(id)).filter(Boolean);
+}
+
+function moveSelection(delta, extend = false) {
+  if (!S.items.length) return;
+  const from = extend ? (S.focusId || S.anchorId) : (S.selection.size > 1 ? S.anchorId : S.selectedId);
+  let index = S.items.findIndex((item) => item.id === from);
   if (index < 0) index = 0;
   else index = Math.min(S.items.length - 1, Math.max(0, index + delta));
-  select(S.items[index].id);
+  const id = S.items[index].id;
+  if (extend && S.selection.size) {
+    S.focusId = id;
+    extendSelect(id);
+  } else {
+    select(id);
+  }
 }
 
 // ---------------------------------------------------------------- detail
@@ -417,10 +523,78 @@ function fileList(item) {
   return files;
 }
 
+function countByType(items) {
+  const counts = new Map();
+  for (const item of items) counts.set(item.type, (counts.get(item.type) || 0) + 1);
+  return [...counts].map(([type, n]) => `${n} ${TYPE_LABEL[type] || type}`).join(' · ');
+}
+
+function bulkPanel() {
+  const items = selectedItems();
+  return el('div', { class: 'bulk' },
+    el('div', { class: 'bulk-count' }, `${items.length} 项`),
+    el('div', { class: 'bulk-sub' }, countByType(items)),
+    el('div', { class: 'bulk-actions' },
+      el('button', { class: 'bulk-btn', type: 'button', onclick: () => copySelection() }, '复制'),
+      el('button', {
+        class: 'bulk-btn',
+        type: 'button',
+        onclick: (event) => { event.stopPropagation(); openSendMenu(event.currentTarget, items); },
+      }, '发送'),
+      el('button', { class: 'bulk-btn danger', type: 'button', onclick: () => deleteItems(items.map((item) => item.id)) }, '删除'),
+      el('span', { class: 'bulk-sep' }),
+      el('button', { class: 'bulk-link', type: 'button', onclick: () => selectAllVisible() }, '全选'),
+      el('button', { class: 'bulk-link', type: 'button', onclick: () => clearSelection() }, '取消'),
+    ),
+  );
+}
+
+/** When the preview is collapsed there is nowhere to show the bulk panel,
+ *  so the same actions float above the list instead. */
+function renderBulkBar() {
+  const bar = $('#bulkbar');
+  if (!bar) return;
+  const items = selectedItems();
+  const show = S.collapsed && items.length > 1 && !document.body.classList.contains('booting');
+  bar.hidden = !show;
+  bar.replaceChildren();
+  if (!show) return;
+  bar.append(
+    el('span', { class: 'bulkbar-count' }, `${items.length} 项`),
+    el('span', { class: 'bulkbar-sep' }),
+    el('button', { class: 'bulkbar-btn', type: 'button', onclick: () => copySelection() }, '复制'),
+    el('button', {
+      class: 'bulkbar-btn',
+      type: 'button',
+      onclick: (event) => { event.stopPropagation(); openSendMenu(event.currentTarget, items); },
+    }, '发送'),
+    el('button', { class: 'bulkbar-btn danger', type: 'button', onclick: () => deleteItems(items.map((item) => item.id)) }, '删除'),
+    el('button', { class: 'bulkbar-close', type: 'button', 'aria-label': '取消选择', onclick: () => clearSelection() }, icon('close')),
+  );
+}
+
+function setCollapsed(collapsed) {
+  S.collapsed = collapsed;
+  try { localStorage.setItem('paste.collapsed', collapsed ? '1' : '0'); } catch { /* private mode */ }
+  $('#split').classList.toggle('collapsed', collapsed);
+  const button = $('#collapseBtn');
+  button.setAttribute('aria-pressed', String(collapsed));
+  button.title = collapsed ? '展开预览  ⌘\\' : '收起预览  ⌘\\';
+  button.setAttribute('aria-label', collapsed ? '展开预览' : '收起预览');
+  renderList();
+  renderDetail();
+  renderBulkBar();
+}
+
 function renderDetail() {
   const detail = $('#detail');
   detail.replaceChildren();
   detail.classList.remove('scrolled');
+
+  if (S.selection.size > 1) {
+    detail.append(bulkPanel());
+    return;
+  }
 
   const item = S.items.find((entry) => entry.id === S.selectedId);
   if (!item) {
@@ -441,9 +615,9 @@ function renderDetail() {
         title: '发送到设备',
         // The document listens for clicks to dismiss popovers; opening one from
         // here must not be undone by that same click.
-        onclick: (event) => { event.stopPropagation(); openSendMenu(event.currentTarget, item); },
+        onclick: (event) => { event.stopPropagation(); openSendMenu(event.currentTarget, [item]); },
       }, icon('send')),
-      el('button', { class: 'act danger', type: 'button', 'aria-label': '删除', title: '删除  ⌘⌫', onclick: () => deleteItem(item) }, icon('trash')),
+      el('button', { class: 'act danger', type: 'button', 'aria-label': '删除', title: '删除  ⌘⌫', onclick: () => deleteItems([item.id]) }, icon('trash')),
     ),
   );
 
@@ -552,57 +726,103 @@ async function copyItem(item) {
   }
 }
 
-async function deleteItem(item) {
-  const index = S.items.findIndex((entry) => entry.id === item.id);
+async function copySelection() {
+  const items = selectedItems();
+  if (!items.length) return;
+  if (items.length === 1) {
+    await copyItem(items[0]);
+    return;
+  }
   try {
-    const res = await fetch(`/api/items/${item.id}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error('failed');
+    const res = await fetch('/api/items/bulk-copy', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ids: items.map((item) => item.id) }),
+    });
+    const data = await res.json();
+    if (data.ok && !data.error) {
+      toast(data.mode === 'files' ? `已复制 ${data.count} 个文件` : `已复制 ${data.count} 条文本`);
+    } else {
+      toast(data.error || '复制失败');
+    }
+  } catch {
+    toast('复制失败');
+  }
+}
+
+async function deleteItems(ids) {
+  if (!ids.length) return;
+  let removed = [];
+  try {
+    const res = await fetch('/api/items/bulk-delete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'failed');
+    removed = data.ids || [];
   } catch {
     toast('删除失败');
     return;
   }
-  S.items = S.items.filter((entry) => entry.id !== item.id);
-  S.total = Math.max(0, S.total - 1);
-  bodies.delete(item.id);
-  if (S.selectedId === item.id) {
-    const next = S.items[Math.min(index, S.items.length - 1)];
-    S.selectedId = next ? next.id : null;
-  }
+  if (!removed.length) return;
+
+  const removedSet = new Set(removed);
+  const firstIndex = S.items.findIndex((entry) => removedSet.has(entry.id));
+  S.items = S.items.filter((entry) => !removedSet.has(entry.id));
+  S.total = Math.max(0, S.total - removed.length);
+  for (const id of removed) bodies.delete(id);
+
+  const remaining = [...S.selection].filter((id) => !removedSet.has(id));
+  const next = remaining.length
+    ? remaining
+    : (S.items[Math.min(Math.max(firstIndex, 0), S.items.length - 1)] || []).id
+      ? [S.items[Math.min(Math.max(firstIndex, 0), S.items.length - 1)].id]
+      : [];
+  setSelection(next);
   renderList();
-  renderDetail();
-  toast('已删除', {
+
+  toast(removed.length > 1 ? `已删除 ${removed.length} 项` : '已删除', {
     action: '撤销',
     duration: 12000,
     onAction: async () => {
-      await fetch(`/api/items/${item.id}/restore`, { method: 'POST' });
-      S.selectedId = item.id;
+      await fetch('/api/items/bulk-restore', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ids: removed }),
+      });
       await load();
+      setSelection(removed);
       toast('已恢复');
     },
   });
 }
 
 function copySelected() {
-  const item = S.items.find((entry) => entry.id === S.selectedId);
-  if (item) copyItem(item);
+  copySelection();
 }
 
-async function deleteSelected() {
-  const item = S.items.find((entry) => entry.id === S.selectedId);
-  if (item) deleteItem(item);
+function deleteSelected() {
+  deleteItems([...S.selection]);
 }
 
-async function sendItem(item, peer) {
-  toast(`正在发送到 ${peer.name}`);
+async function sendItems(items, peer) {
+  if (!items || !items.length) return;
+  toast(items.length > 1 ? `正在发送 ${items.length} 项到 ${peer.name}` : `正在发送到 ${peer.name}`);
   try {
     const res = await fetch(`/api/peers/${peer.id}/send`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ itemId: item.id }),
+      body: JSON.stringify({ itemIds: items.map((item) => item.id) }),
     });
     const data = await res.json();
-    if (res.ok && data.ok) toast(data.duplicate ? `${peer.name} 已有此内容` : `已发送到 ${peer.name}`);
-    else toast(data.error || '发送失败');
+    if (data.ok) {
+      toast(items.length > 1 ? `已发送 ${data.sent} 项到 ${peer.name}` : `已发送到 ${peer.name}`);
+    } else {
+      const first = data.failed && data.failed[0];
+      toast((first && first.error) || data.error || '发送失败');
+    }
   } catch {
     toast('发送失败');
   }
@@ -638,7 +858,7 @@ function openPopover(content, anchor) {
   }
 }
 
-function openSendMenu(anchor, item) {
+function openSendMenu(anchor, items) {
   const peers = S.peers.filter((peer) => peer.trusted);
   const content = el('div', {},
     el('div', { class: 'pop-head' }, '发送到'),
@@ -647,7 +867,7 @@ function openSendMenu(anchor, item) {
         const row = el('button', {
           class: 'peer',
           type: 'button',
-          onclick: () => { closePopover(); sendItem(item, peer); },
+          onclick: () => { closePopover(); sendItems(items, peer); },
         },
         el('span', { class: `status ${peer.online ? 'on' : ''}` }),
         el('span', { class: 'peer-name' }, peer.name));
@@ -822,11 +1042,22 @@ async function load() {
     S.items = data.items || [];
     S.total = data.total || 0;
     S.hasMore = !!data.hasMore;
-    if (!S.items.some((item) => item.id === S.selectedId)) {
+
+    // Keep whatever is still visible selected; otherwise fall back to the first row.
+    const visible = new Set(S.items.map((item) => item.id));
+    const kept = [...S.selection].filter((id) => visible.has(id));
+    if (kept.length) {
+      S.selection = new Set(kept);
+      if (!S.selection.has(S.anchorId)) S.anchorId = kept[0];
+      S.selectedId = kept.length === 1 ? kept[0] : null;
+    } else {
+      S.selection = new Set(S.items.length ? [S.items[0].id] : []);
+      S.anchorId = S.items.length ? S.items[0].id : null;
       S.selectedId = S.items.length ? S.items[0].id : null;
     }
     renderList();
     renderDetail();
+    renderBulkBar();
   } catch {
     toast('无法连接');
   }
@@ -903,16 +1134,19 @@ function connect() {
     S.total += 1;
     const wasEmpty = S.items.length === 1;
     renderList();
-    if (wasEmpty || !S.selectedId) select(item.id);
+    if (wasEmpty || !S.selection.size) select(item.id);
   });
 
   source.addEventListener('removed', (event) => {
     const { id } = JSON.parse(event.data);
     S.items = S.items.filter((item) => item.id !== id);
     S.total = Math.max(0, S.total - 1);
-    if (S.selectedId === id) S.selectedId = S.items.length ? S.items[0].id : null;
+    if (S.selection.has(id)) {
+      const next = new Set(S.selection);
+      next.delete(id);
+      setSelection([...next]);
+    }
     renderList();
-    renderDetail();
   });
 
   source.addEventListener('peers', (event) => {
@@ -963,6 +1197,11 @@ document.addEventListener('click', () => {
 
 $('#lightbox').addEventListener('click', closeLightbox);
 
+$('#collapseBtn').addEventListener('click', (event) => {
+  event.stopPropagation();
+  setCollapsed(!S.collapsed);
+});
+
 document.addEventListener('keydown', (event) => {
   const meta = event.metaKey || event.ctrlKey;
 
@@ -980,9 +1219,22 @@ document.addEventListener('keydown', (event) => {
     return;
   }
 
+  if (meta && event.key === '\\') {
+    event.preventDefault();
+    setCollapsed(!S.collapsed);
+    return;
+  }
+
+  if (meta && event.key.toLowerCase() === 'a' && event.target !== $('#q')) {
+    event.preventDefault();
+    selectAllVisible();
+    return;
+  }
+
   if (event.key === 'Escape') {
     if (!$('#lightbox').hidden) return closeLightbox();
     if (!$('#popover').hidden) return closePopover();
+    if (S.selection.size > 1) return clearSelection();
     if ($('#split').classList.contains('detail-open')) $('#split').classList.remove('detail-open');
     return;
   }
@@ -991,11 +1243,11 @@ document.addEventListener('keydown', (event) => {
 
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
     event.preventDefault();
-    moveSelection(event.key === 'ArrowDown' ? 1 : -1);
+    moveSelection(event.key === 'ArrowDown' ? 1 : -1, event.shiftKey);
     return;
   }
 
-  if (event.key === 'Enter' && S.selectedId) {
+  if (event.key === 'Enter' && S.selection.size) {
     event.preventDefault();
     copySelected();
     return;
@@ -1076,8 +1328,7 @@ window.addEventListener('drop', async (event) => {
 // ---------------------------------------------------------------- boot
 
 renderFilters();
-renderList();
-renderDetail();
+setCollapsed(localStorage.getItem('paste.collapsed') === '1');
 updatePeerDot();
 connect();
 

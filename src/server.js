@@ -12,7 +12,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { publicConfig } from './config.js';
-import { copyToClipboard } from './copy.js';
+import { copyRaw, copyToClipboard } from './copy.js';
 import { log, logError } from './log.js';
 import { summarize } from './store.js';
 import { normalizeCode, safeEqual } from './util.js';
@@ -38,6 +38,15 @@ export function createServer({ config, dataDir, store, bundles, lan, capture, sa
   let server = null;
 
   // ---------------------------------------------------------------- helpers
+
+  function rememberRestorable(id, meta) {
+    restorable.set(id, meta);
+    const timer = setTimeout(() => {
+      restorable.delete(id);
+      store.discardTrash(id);
+    }, RESTORE_TTL);
+    timer.unref?.();
+  }
 
   function broadcast(event, data) {
     const frame = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -261,6 +270,62 @@ export function createServer({ config, dataDir, store, bundles, lan, capture, sa
       }
     }
 
+    if (rest[0] === 'items' && rest.length === 2 && method === 'POST'
+      && ['bulk-delete', 'bulk-restore', 'bulk-copy'].includes(rest[1])) {
+      const body = await readJson(req, 64 * 1024);
+      const ids = [...new Set(Array.isArray(body.ids) ? body.ids.map(String) : [])].slice(0, 500);
+
+      if (rest[1] === 'bulk-delete') {
+        const removed = [];
+        for (const id of ids) {
+          const meta = store.remove(id);
+          if (!meta) continue;
+          rememberRestorable(id, meta);
+          removed.push(id);
+        }
+        return json(res, 200, { ok: true, ids: removed, undo: RESTORE_TTL });
+      }
+
+      if (rest[1] === 'bulk-restore') {
+        const restored = [];
+        for (const id of ids) {
+          const pending = restorable.get(id);
+          if (!pending) continue;
+          restorable.delete(id);
+          if (store.restore(pending)) restored.push(id);
+        }
+        return json(res, 200, { ok: true, restored });
+      }
+
+      // Copy several items at once: files win (a paste target expects files),
+      // otherwise texts are joined with a blank line.
+      const metas = ids.map((id) => store.get(id)).filter(Boolean);
+      if (!metas.length) return json(res, 400, { error: '没有选中项' });
+
+      const filePaths = [];
+      for (const meta of metas) {
+        meta.files.forEach((file, index) => {
+          const p = file.missing ? file.origin : store.filePath(meta, index);
+          if (p && fs.existsSync(p)) filePaths.push(p);
+        });
+      }
+      if (filePaths.length) {
+        const result = await copyRaw('files', filePaths);
+        if (result.ok && capture) capture.ignoreNext('files');
+        return json(res, result.ok ? 200 : 500, { ...result, mode: 'files', count: filePaths.length });
+      }
+
+      const texts = metas.filter((meta) => meta.type === 'text').map((meta) => store.readText(meta));
+      if (!texts.length) return json(res, 400, { error: '没有可复制的内容' });
+      const tmp = path.join(dataDir, 'tmp', `bulk-${Date.now().toString(36)}.txt`);
+      fs.mkdirSync(path.dirname(tmp), { recursive: true });
+      fs.writeFileSync(tmp, texts.join('\n\n'), 'utf8');
+      const result = await copyRaw('text', [tmp]);
+      fs.rmSync(tmp, { force: true });
+      if (result.ok && capture) capture.ignoreNext('text');
+      return json(res, result.ok ? 200 : 500, { ...result, mode: 'text', count: texts.length });
+    }
+
     if (rest[0] === 'items' && rest.length >= 2) {
       const id = rest[1];
 
@@ -286,12 +351,7 @@ export function createServer({ config, dataDir, store, bundles, lan, capture, sa
       if (rest.length === 2 && method === 'DELETE') {
         const removed = store.remove(id);
         if (!removed) return json(res, 404, { error: 'not found' });
-        restorable.set(id, removed);
-        const timer = setTimeout(() => {
-          restorable.delete(id);
-          store.discardTrash(id);
-        }, RESTORE_TTL);
-        timer.unref?.();
+        rememberRestorable(id, removed);
         return json(res, 200, { ok: true, id, undo: RESTORE_TTL });
       }
 
@@ -387,12 +447,22 @@ export function createServer({ config, dataDir, store, bundles, lan, capture, sa
 
     if (rest[0] === 'peers' && rest.length === 3 && rest[2] === 'send' && method === 'POST') {
       const body = await readJson(req, 4096);
-      try {
-        const result = await lan.send({ peerId: rest[1], itemId: body.itemId });
-        return json(res, 200, result);
-      } catch (err) {
-        return json(res, 502, { error: err.message });
+      const ids = Array.isArray(body.itemIds) && body.itemIds.length
+        ? [...new Set(body.itemIds.map(String))].slice(0, 200)
+        : (body.itemId ? [String(body.itemId)] : []);
+      if (!ids.length) return json(res, 400, { error: '没有选中项' });
+
+      let sent = 0;
+      const failed = [];
+      for (const itemId of ids) {
+        try {
+          await lan.send({ peerId: rest[1], itemId });
+          sent += 1;
+        } catch (err) {
+          failed.push({ id: itemId, error: err.message });
+        }
       }
+      return json(res, failed.length && !sent ? 502 : 200, { ok: sent > 0, sent, failed });
     }
 
     return json(res, 404, { error: 'not found' });

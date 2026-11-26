@@ -23,6 +23,9 @@
         <input id="q" type="text" placeholder="搜索" autocomplete="off" spellcheck="false" aria-label="搜索">
         <kbd id="kbdHint">⌘K</kbd>
       </label>
+      <button class="icon-btn" id="collapseBtn" aria-label="收起预览" title="收起预览  ⌘\" aria-pressed="false">
+        <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.8" y="3" width="12.4" height="10" rx="2"/><path d="M10.1 3v10"/></svg>
+      </button>
       <button class="icon-btn" id="devicesBtn" aria-label="设备" aria-haspopup="dialog">
         <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5.6h9.6M9.2 3.2l2.4 2.4-2.4 2.4"/><path d="M14 10.4H4.4M6.8 8l-2.4 2.4L6.8 12.8"/></svg>
         <span class="dot" id="peerDot" hidden></span>
@@ -31,12 +34,13 @@
   </header>
 
   <main class="split" id="split">
-    <section class="list" id="list" tabindex="-1" aria-label="记录"></section>
+    <section class="list" id="list" tabindex="-1" role="listbox" aria-multiselectable="true" aria-label="记录"></section>
     <section class="detail" id="detail" aria-live="polite"></section>
   </main>
 </div>
 
 <div class="popover" id="popover" hidden role="dialog"></div>
+<div class="bulkbar" id="bulkbar" hidden role="toolbar" aria-label="批量操作"></div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <div class="lightbox" id="lightbox" hidden aria-label="查看大图"><img id="lightboxImg" alt=""></div>
 <div class="dropzone" id="dropzone" hidden></div>

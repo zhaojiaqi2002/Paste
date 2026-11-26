@@ -31,11 +31,32 @@ function run(cmd, args, timeout = 20000) {
 }
 
 /**
+ * Low-level writer: put one payload on the system clipboard.
+ * mode is 'text' (single path to a utf8 file), 'image' (single png) or
+ * 'files' (one or more paths, pasted as file URLs).
+ *
+ * @returns {Promise<{ok: boolean, error?: string}>}
+ */
+export async function copyRaw(mode, paths) {
+  if (!IS_MAC && !IS_WIN) return { ok: false, error: 'platform not supported' };
+  if (!paths || !paths.length) return { ok: false, error: 'nothing to copy' };
+
+  const result = IS_MAC
+    ? await run('/usr/bin/osascript', ['-l', 'JavaScript', MAC_SCRIPT, mode, ...paths])
+    : await run('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-Sta', '-ExecutionPolicy', 'Bypass', '-File', WIN_SCRIPT,
+      '-Mode', mode, ...(mode === 'files' ? ['-Paths', ...paths] : ['-Value', paths[0]]),
+    ]);
+
+  if (!result.ok) log('[copy] failed', mode, result.error);
+  return result;
+}
+
+/**
+ * Copy one stored item.
  * @returns {Promise<{ok: boolean, error?: string}>}
  */
 export async function copyToClipboard(store, meta) {
-  if (!IS_MAC && !IS_WIN) return { ok: false, error: 'platform not supported' };
-
   let mode;
   let args;
   const first = meta.files[0];
@@ -60,14 +81,5 @@ export async function copyToClipboard(store, meta) {
   }
 
   if (!args.length) return { ok: false, error: 'nothing to copy' };
-
-  const result = IS_MAC
-    ? await run('/usr/bin/osascript', ['-l', 'JavaScript', MAC_SCRIPT, mode, ...args])
-    : await run('powershell.exe', [
-      '-NoProfile', '-NonInteractive', '-Sta', '-ExecutionPolicy', 'Bypass', '-File', WIN_SCRIPT,
-      '-Mode', mode, ...(mode === 'files' ? ['-Paths', ...args] : ['-Value', args[0]]),
-    ]);
-
-  if (!result.ok) log('[copy] failed', mode, result.error);
-  return result;
+  return copyRaw(mode, args);
 }

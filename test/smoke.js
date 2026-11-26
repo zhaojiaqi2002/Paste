@@ -195,6 +195,56 @@ try {
   equal('undo restore succeeds', restored.status, 200);
   ok('restored item is back', restored.body.item && restored.body.item.id === textId);
 
+  console.log('\nBulk selection');
+  const bulkIds = [];
+  for (const label of ['bulk one', 'bulk two', 'bulk three']) {
+    const added = await A.addText(label);
+    bulkIds.push(added.body.item.id);
+  }
+  const copied = await A.json('/api/items/bulk-copy', {
+    method: 'POST',
+    body: JSON.stringify({ ids: bulkIds }),
+  });
+  if (process.platform === 'darwin' || process.platform === 'win32') {
+    equal('bulk copy of texts succeeds', copied.status, 200, JSON.stringify(copied.body));
+    ok('bulk copy reports text mode and count', copied.body.mode === 'text' && copied.body.count === 3,
+      JSON.stringify(copied.body));
+  }
+
+  const deleted = await A.json('/api/items/bulk-delete', {
+    method: 'POST',
+    body: JSON.stringify({ ids: bulkIds }),
+  });
+  equal('bulk delete removes every id', deleted.body.ids.length, 3);
+  equal('deleted items leave the index', (await A.json('/api/items?q=bulk')).body.total, 0);
+
+  const bulkRestored = await A.json('/api/items/bulk-restore', {
+    method: 'POST',
+    body: JSON.stringify({ ids: bulkIds }),
+  });
+  equal('bulk undo restores every id', bulkRestored.body.restored.length, 3);
+  equal('restored items are listed again', (await A.json('/api/items?q=bulk')).body.total, 3);
+
+  // a repeated delete must not resurrect an already-expired undo window
+  const twice = await A.json('/api/items/bulk-restore', {
+    method: 'POST',
+    body: JSON.stringify({ ids: bulkIds }),
+  });
+  equal('undo cannot be replayed', twice.body.restored.length, 0);
+
+  const pairFiles = await A.addFiles([
+    { name: 'bulk-a.txt', data: Buffer.from('a') },
+    { name: 'bulk-b.txt', data: Buffer.from('b') },
+  ]);
+  const fileCopy = await A.json('/api/items/bulk-copy', {
+    method: 'POST',
+    body: JSON.stringify({ ids: [pairFiles.body.item.id] }),
+  });
+  if (process.platform === 'darwin' || process.platform === 'win32') {
+    ok('bulk copy of files reports file mode', fileCopy.body.mode === 'files' && fileCopy.body.count === 2,
+      JSON.stringify(fileCopy.body));
+  }
+
   console.log('\nLAN pairing and transfer');
   const stateA = await A.json('/api/state');
   const stateB = await B.json('/api/state');

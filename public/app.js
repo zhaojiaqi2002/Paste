@@ -177,6 +177,10 @@ function highlighted(text, query) {
   return frag;
 }
 
+function openPermissionSettings() {
+  fetch('/api/system/fda', { method: 'POST' }).catch(() => toast('无法打开系统设置'));
+}
+
 function toast(message, options = {}) {
   const node = $('#toast');
   node.replaceChildren(el('span', {}, message));
@@ -229,7 +233,10 @@ function rowMedia(item) {
     return el('div', { class: 'row-media' }, el('span', { class: 'ext' }, first ? extOf(first.name).slice(0, 4) : 'FILE'));
   }
   if (item.type === 'video') {
-    return el('div', { class: 'row-media' }, icon('video'));
+    const box = el('div', { class: 'row-media' });
+    if (item.poster) box.append(el('img', { src: `/api/items/${item.id}/poster`, loading: 'lazy', alt: '' }));
+    else box.append(icon('video'));
+    return box;
   }
   return null;
 }
@@ -276,12 +283,14 @@ function rowFor(item) {
       tabindex: '-1',
       dataset: { id: item.id },
       'aria-selected': String(selected),
-      title: TYPE_LABEL[item.type] || '',
+      title: item.type === 'text'
+        ? `${TYPE_LABEL.text} · ${item.preview.slice(0, 160)}`
+        : `${TYPE_LABEL[item.type] || ''} · ${(item.files[0] && item.files[0].name) || ''}`.trim(),
     },
     el('span', { class: 'check', role: 'checkbox', 'aria-checked': String(selected) }, icon('check')),
     media,
     el('div', { class: 'row-main' }, title, sub),
-    el('div', { class: 'row-actions' },
+    S.collapsed ? el('div', { class: 'row-actions' },
       el('button', {
         class: 'act',
         type: 'button',
@@ -289,14 +298,14 @@ function rowFor(item) {
         title: '复制',
         onclick: (event) => { event.stopPropagation(); copyItem(item); },
       }, icon('copy')),
-      S.collapsed ? el('button', {
+      el('button', {
         class: 'act danger',
         type: 'button',
         'aria-label': '删除',
         title: '删除',
         onclick: (event) => { event.stopPropagation(); deleteItems([item.id]); },
-      }, icon('trash')) : null,
-    ),
+      }, icon('trash')),
+    ) : null,
     el('div', { class: 'row-time' }, hhmm(item.createdAt)),
   );
 
@@ -517,7 +526,42 @@ function fileRow(item, index) {
   icon('download'));
 }
 
+function missingNotice(item) {
+  if (!item.files.some((file) => file.missing)) return null;
+  return el('div', { class: 'notice' },
+    el('span', { class: 'notice-text' }, '原始文件未读取'),
+    el('button', {
+      class: 'notice-link',
+      type: 'button',
+      onclick: async (event) => {
+        event.currentTarget.disabled = true;
+        const res = await fetch(`/api/items/${item.id}/import`, { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        event.currentTarget.disabled = false;
+        if (data.item) patchItem(data.item);
+        toast(data.item && !data.item.missing ? '已读取原始文件' : '仍然无法读取，请先授权');
+      },
+    }, '重试'),
+    el('button', { class: 'notice-link', type: 'button', onclick: openPermissionSettings }, '授权'));
+}
+
+function patchItem(item) {
+  const index = S.items.findIndex((entry) => entry.id === item.id);
+  if (index < 0) return;
+  S.items[index] = item;
+  renderList();
+  if (S.selectedId === item.id) renderDetail();
+}
+
 function fileList(item) {
+  const notice = missingNotice(item);
+  if (notice) {
+    const wrap = el('div', {}, notice);
+    const files = el('div', { class: 'files' });
+    item.files.forEach((_, index) => files.append(fileRow(item, index)));
+    wrap.append(files);
+    return wrap;
+  }
   const files = el('div', { class: 'files' });
   item.files.forEach((_, index) => files.append(fileRow(item, index)));
   return files;
@@ -666,12 +710,24 @@ function renderDetail() {
   } else if (item.type === 'video' && item.files[0] && item.files[0].missing) {
     body.append(fileList(item));
   } else if (item.type === 'video') {
-    const video = el('video', { src: `/api/items/${item.id}/file/0`, controls: true, preload: 'metadata' });
-    video.addEventListener('error', () => {
-      if (S.selectedId !== item.id) return;
-      body.replaceChildren(fileList(item));
+    const posterUrl = item.poster ? `/api/items/${item.id}/poster` : null;
+    const player = el('video', {
+      src: `/api/items/${item.id}/file/0`,
+      poster: posterUrl,
+      controls: true,
+      preload: 'metadata',
     });
-    body.append(video);
+    // QuickTime/.mov and other codecs the browser cannot decode fall back to the
+    // stored still frame plus a button that opens the system player.
+    player.addEventListener('error', () => {
+      if (S.selectedId !== item.id) return;
+      body.replaceChildren(videoFallback(item, posterUrl));
+    });
+    body.append(player);
+    if (posterUrl) {
+      body.append(el('div', { class: 'caption' },
+        el('button', { class: 'link-btn', type: 'button', onclick: () => openInPlayer(item) }, '用默认播放器打开')));
+    }
     if (item.files.length > 1) {
       const rest = fileList(item);
       rest.style.marginTop = '18px';
@@ -701,6 +757,30 @@ async function loadBody(item) {
   }
 }
 
+function openInPlayer(item) {
+  fetch(`/api/items/${item.id}/open`, { method: 'POST' })
+    .then((res) => res.json())
+    .then((data) => { if (!data.ok) toast(data.error || '无法打开'); })
+    .catch(() => toast('无法打开'));
+}
+
+/** A codec the browser cannot decode still gets a still frame and a way out. */
+function videoFallback(item, posterUrl) {
+  const wrap = el('div', {});
+  if (posterUrl) {
+    wrap.append(el('button', {
+      class: 'image-frame',
+      type: 'button',
+      'aria-label': '用默认播放器打开',
+      onclick: () => openInPlayer(item),
+    }, el('img', { src: posterUrl, alt: '' })));
+  }
+  wrap.append(el('div', { class: 'video-actions' },
+    el('button', { class: 'bulk-btn', type: 'button', onclick: () => openInPlayer(item) }, '用默认播放器打开')));
+  wrap.append(fileList(item));
+  return wrap;
+}
+
 function openLightbox(src) {
   const box = $('#lightbox');
   $('#lightboxImg').src = src;
@@ -719,8 +799,13 @@ async function copyItem(item) {
   try {
     const res = await fetch(`/api/items/${item.id}/copy`, { method: 'POST' });
     const data = await res.json();
-    if (data.ok) toast('已复制');
-    else toast(data.error || '复制失败');
+    if (data.ok) {
+      toast(data.skipped ? `已复制（${data.skipped} 个文件不可读）` : '已复制');
+    } else if (data.reason === 'unreadable') {
+      toast(data.error, { action: '授权', duration: 9000, onAction: openPermissionSettings });
+    } else {
+      toast(data.error || '复制失败');
+    }
   } catch {
     toast('复制失败');
   }
@@ -741,7 +826,10 @@ async function copySelection() {
     });
     const data = await res.json();
     if (data.ok && !data.error) {
-      toast(data.mode === 'files' ? `已复制 ${data.count} 个文件` : `已复制 ${data.count} 条文本`);
+      const skipped = data.skipped ? `（${data.skipped} 个不可读）` : '';
+      toast(data.mode === 'files' ? `已复制 ${data.count} 个文件${skipped}` : `已复制 ${data.count} 条文本`);
+    } else if (data.reason === 'unreadable') {
+      toast(data.error, { action: '授权', duration: 9000, onAction: openPermissionSettings });
     } else {
       toast(data.error || '复制失败');
     }
@@ -1119,11 +1207,7 @@ function connect() {
       toast('受保护的文件：已记录名称与位置', {
         action: '授权',
         duration: 9000,
-        onAction: async () => {
-          try {
-            await fetch('/api/system/fda', { method: 'POST' });
-          } catch { toast('无法打开系统设置'); }
-        },
+        onAction: openPermissionSettings,
       });
     }
     if (!matches) {
@@ -1135,6 +1219,10 @@ function connect() {
     const wasEmpty = S.items.length === 1;
     renderList();
     if (wasEmpty || !S.selection.size) select(item.id);
+  });
+
+  source.addEventListener('update', (event) => {
+    patchItem(JSON.parse(event.data));
   });
 
   source.addEventListener('removed', (event) => {

@@ -312,7 +312,11 @@ export function createServer({ config, dataDir, store, bundles, lan, capture, sa
       if (filePaths.length) {
         const result = await copyRaw('files', filePaths);
         if (result.ok && capture) capture.ignoreNext('files');
-        return json(res, result.ok ? 200 : 500, { ...result, mode: 'files', count: filePaths.length });
+        return json(res, result.ok ? 200 : 500, {
+          ...result,
+          mode: 'files',
+          count: filePaths.length - (result.skipped || 0),
+        });
       }
 
       const texts = metas.filter((meta) => meta.type === 'text').map((meta) => store.readText(meta));
@@ -361,10 +365,42 @@ export function createServer({ config, dataDir, store, bundles, lan, capture, sa
         return json(res, result.ok ? 200 : 500, result);
       }
 
+      if (rest[2] === 'import' && method === 'POST') {
+        const updated = await store.importMissing(id);
+        if (!updated) return json(res, 404, { error: 'not found' });
+        broadcast('update', summarize(updated));
+        return json(res, 200, { ok: true, item: summarize(updated) });
+      }
+
       if (rest[2] === 'thumb' && method === 'GET') {
         const thumb = store.thumbPath(meta);
         if (!thumb) return text(res, 404, 'no thumb');
         return serveFile(req, res, thumb, { mime: 'image/png' });
+      }
+
+      if (rest[2] === 'poster' && method === 'GET') {
+        const poster = store.posterPath(meta);
+        if (!poster) return text(res, 404, 'no poster');
+        return serveFile(req, res, poster, { mime: 'image/png' });
+      }
+
+      if (rest[2] === 'open' && method === 'POST') {
+        // Hand the file to the OS default app — the escape hatch for codecs the
+        // browser cannot decode.
+        const file = store.filePath(meta, 0);
+        if (!file) return json(res, 404, { error: '原始文件未读取' });
+        try {
+          if (process.platform === 'darwin') {
+            spawn('open', [file], { detached: true, stdio: 'ignore' }).unref();
+          } else if (process.platform === 'win32') {
+            spawn('cmd', ['/c', 'start', '', file], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+          } else {
+            spawn('xdg-open', [file], { detached: true, stdio: 'ignore' }).unref();
+          }
+          return json(res, 200, { ok: true });
+        } catch (err) {
+          return json(res, 500, { ok: false, error: err.message });
+        }
       }
 
       if (rest[2] === 'body' && method === 'GET') {

@@ -2,6 +2,7 @@
 // macOS: sips. Windows: System.Drawing through PowerShell. No npm image deps.
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { exists, sniffImageFile } from './util.js';
@@ -72,4 +73,26 @@ export async function makeThumb(src, dest, max = 480) {
     return false;
   }
   return false;
+}
+
+/**
+ * A still frame for a video, so a codec the browser cannot decode still gets a
+ * preview. macOS ships Quick Look; Windows has no equally simple CLI, so this is
+ * best-effort and callers must tolerate false.
+ */
+export async function makePoster(src, dest, max = 1000) {
+  if (process.platform !== 'darwin' || !exists('/usr/bin/qlmanage')) return false;
+  let tmp = null;
+  try {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'paste-poster-'));
+    await run('/usr/bin/qlmanage', ['-t', '-s', String(max), '-o', tmp, src], 8000);
+    const produced = path.join(tmp, `${path.basename(src)}.png`);
+    if (!exists(produced)) return false;
+    fs.copyFileSync(produced, dest);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+  }
 }

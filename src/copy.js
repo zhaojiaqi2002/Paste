@@ -10,6 +10,19 @@ const IS_WIN = process.platform === 'win32';
 const MAC_SCRIPT = path.join(import.meta.dirname, 'clipboard', 'copy-mac.mjs');
 const WIN_SCRIPT = path.join(import.meta.dirname, 'clipboard', 'copy-win.ps1');
 
+/** Can this process actually read the file? TCC denies open(2), not stat(2). */
+function readable(file) {
+  let fd = null;
+  try {
+    fd = fs.openSync(file, 'r');
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== null) { try { fs.closeSync(fd); } catch { /* ignore */ } }
+  }
+}
+
 function run(cmd, args, timeout = 20000) {
   return new Promise((resolve) => {
     let child;
@@ -39,7 +52,20 @@ function run(cmd, args, timeout = 20000) {
  */
 export async function copyRaw(mode, paths) {
   if (!IS_MAC && !IS_WIN) return { ok: false, error: 'platform not supported' };
-  if (!paths || !paths.length) return { ok: false, error: 'nothing to copy' };
+  if (!paths || !paths.length) return { ok: false, error: 'nothing to copy', reason: 'empty' };
+
+  // macOS drops file flavors whose file this process cannot read, which would
+  // leave the clipboard empty while reporting success. Refuse up front instead,
+  // and leave whatever the user already had on the clipboard untouched.
+  const usable = paths.filter(readable);
+  const skipped = paths.length - usable.length;
+  if (!usable.length) {
+    return {
+      ok: false,
+      reason: 'unreadable',
+      error: skipped ? '原始文件在受保护的位置，无法读取' : 'nothing to copy',
+    };
+  }
 
   const result = IS_MAC
     ? await run('/usr/bin/osascript', ['-l', 'JavaScript', MAC_SCRIPT, mode, ...paths])
@@ -49,7 +75,7 @@ export async function copyRaw(mode, paths) {
     ]);
 
   if (!result.ok) log('[copy] failed', mode, result.error);
-  return result;
+  return { ...result, skipped };
 }
 
 /**

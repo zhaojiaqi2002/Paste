@@ -15,7 +15,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
-import { makeThumb, toPng } from './thumb.js';
+import { makePoster, makeThumb, toPng } from './thumb.js';
 import { search, snippetOf } from './search.js';
 import {
   browserImage, classify, dayKey, dayKeyBefore, extOf, imageSize, isDir, mimeOf,
@@ -224,11 +224,23 @@ export class Store extends EventEmitter {
 
       const totalSize = stored.reduce((n, f) => n + f.size, 0);
       const missingCount = stored.filter((f) => f.missing).length;
+
       let hasThumb = false;
       if (type === 'image' && stored[0] && !stored[0].missing) {
         const firstAbs = path.join(dir, stored[0].stored);
         hasThumb = await makeThumb(firstAbs, path.join(dir, 'thumb.png'));
         if (!hasThumb) fs.rmSync(path.join(dir, 'thumb.png'), { force: true });
+      }
+
+      // A still frame for videos: browsers cannot decode every codec (QuickTime
+      // .mov in particular), and a preview beats a broken player.
+      let hasPoster = false;
+      // Quick Look can stall on files that are not really videos; only bother
+      // with payloads that could plausibly be one.
+      if (type === 'video' && stored[0] && !stored[0].missing && stored[0].size > 8192) {
+        const videoAbs = path.join(dir, stored[0].stored);
+        hasPoster = await makePoster(videoAbs, path.join(dir, 'poster.png'));
+        if (!hasPoster) fs.rmSync(path.join(dir, 'poster.png'), { force: true });
       }
 
       const meta = {
@@ -245,6 +257,7 @@ export class Store extends EventEmitter {
         files: stored,
         size: totalSize,
         thumb: hasThumb,
+        poster: hasPoster,
         missing: missingCount,
       };
       writeJsonAtomic(path.join(dir, 'meta.json'), meta);
@@ -300,6 +313,11 @@ export class Store extends EventEmitter {
 
   thumbPath(meta) {
     const p = path.join(this.itemDir(meta), 'thumb.png');
+    return fs.existsSync(p) ? p : null;
+  }
+
+  posterPath(meta) {
+    const p = path.join(this.itemDir(meta), 'poster.png');
     return fs.existsSync(p) ? p : null;
   }
 
@@ -361,6 +379,72 @@ export class Store extends EventEmitter {
     const bytes = this.entries.reduce((n, e) => n + (e.size || 0), 0);
     const days = new Set(this.entries.map((e) => e.day)).size;
     return { count: this.entries.length, bytes, days, retentionDays: this.retentionDays };
+  }
+
+  /**
+   * Re-read the bytes of files that were unreadable when the item was captured
+   * (macOS protected another app's container, or TCC hid a folder). After the
+   * user grants access, this fills the record in place instead of asking them
+   * to copy it again — the temporary original may already be gone.
+   */
+  async importMissing(id) {
+    const meta = this.byId.get(id);
+    if (!meta || !meta.files) return null;
+    const dir = this.itemDir(meta);
+    let changed = false;
+
+    for (const file of meta.files) {
+      if (!file.missing || !file.origin) continue;
+      const target = safeName(file.name || path.basename(file.origin));
+      const dest = path.join(dir, 'files', target);
+      try {
+        fs.copyFileSync(file.origin, dest);
+      } catch {
+        continue; // still protected
+      }
+
+      file.stored = `files/${target}`;
+      file.missing = false;
+      file.size = fs.statSync(dest).size;
+      file.mime = mimeOf(file.name);
+
+      if (file.mime.startsWith('image/')) {
+        let finalRel = file.stored;
+        if (sniffImageFile(dest) !== 'png') {
+          const stem = target.replace(/\.[^.]+$/, '') || 'image';
+          const pngName = `${stem}.png`;
+          const conv = path.join(dir, 'files', `${stem}.conv.png`);
+          if (await toPng(dest, conv)) {
+            fs.rmSync(dest, { force: true });
+            fs.renameSync(conv, path.join(dir, 'files', pngName));
+            finalRel = `files/${pngName}`;
+            file.name = pngName;
+            file.stored = finalRel;
+          }
+        }
+        const abs = path.join(dir, finalRel);
+        const buf = fs.readFileSync(abs);
+        const dims = imageSize(buf);
+        file.size = buf.length;
+        file.mime = 'image/png';
+        file.w = dims ? dims.w : null;
+        file.h = dims ? dims.h : null;
+      }
+      changed = true;
+    }
+
+    if (!changed) return meta;
+    meta.missing = meta.files.filter((f) => f.missing).length;
+    if (meta.type === 'image' && meta.files[0] && !meta.files[0].missing) {
+      meta.thumb = await makeThumb(this.filePath(meta, 0), path.join(dir, 'thumb.png'));
+    }
+    if (meta.type === 'video' && meta.files[0] && !meta.files[0].missing) {
+      meta.poster = await makePoster(this.filePath(meta, 0), path.join(dir, 'poster.png'));
+    }
+    writeJsonAtomic(path.join(dir, 'meta.json'), meta);
+    this.hayCache.delete(meta.id);
+    this.emit('update', meta);
+    return meta;
   }
 
   // ------------------------------------------------------------ delete
@@ -497,6 +581,7 @@ export function summarize(meta) {
       missing: !!f.missing,
     })),
     thumb: !!meta.thumb,
+    poster: !!meta.poster,
     missing: meta.missing || 0,
   };
 }

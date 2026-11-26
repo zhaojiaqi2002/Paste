@@ -49,6 +49,7 @@ const app = createServer({ config, dataDir, store, bundles, lan, capture, saveCo
 broadcast = app.broadcast;
 
 store.on('add', (meta) => broadcast('item', summarize(meta)));
+store.on('update', (meta) => broadcast('update', summarize(meta)));
 store.on('remove', (meta) => broadcast('removed', { id: meta.id }));
 store.on('sweep', (info) => broadcast('reset', info));
 

@@ -358,6 +358,26 @@ try {
   ok('original name and size are kept', ref.entry && ref.entry.files[0].name === 'locked.png' && ref.entry.files[0].size > 0,
     JSON.stringify(ref.entry && ref.entry.files[0]));
   ok('no blob path is handed out', refStore.filePath(ref.entry, 0) === null);
+  const videoRef = path.join(tmp, 'lock-video.mp4');
+  fs.writeFileSync(videoRef, 'video bytes');
+  fs.chmodSync(videoRef, 0o000);
+  const lockedVideo = await refStore.add({ type: 'video', files: [{ path: videoRef, name: 'lock-video.mp4' }], source: 'clipboard' });
+  equal('unreadable video is kept as a reference', lockedVideo.entry.missing, 1);
+
+  const refused = await copyToClipboard(refStore, lockedVideo.entry);
+  ok('copy refuses an unreadable source instead of emptying the clipboard',
+    refused.ok === false && refused.reason === 'unreadable', JSON.stringify(refused));
+
+  fs.chmodSync(videoRef, 0o644);
+  const rescued = await refStore.importMissing(lockedVideo.entry.id);
+  equal('import fills the record once access exists', rescued.missing, 0);
+  ok('imported blob is on disk', !!refStore.filePath(rescued, 0), String(refStore.filePath(rescued, 0)));
+
+  const videoItem = await A.addFiles([{ name: 'clip2.mp4', data: Buffer.from('not a real video') }]);
+  equal('summary exposes a poster flag', typeof videoItem.body.item.poster, 'boolean');
+  const openNoFiles = await A.json(`/api/items/${textId}/open`, { method: 'POST' });
+  equal('open rejects items with no file', openNoFiles.status, 404);
+
   const refSummary = summarize(ref.entry);
   ok('the wire format tells the UI', refSummary.files[0].missing === true && refSummary.missing === 1);
   const gone = { type: 'files', files: [{ name: 'gone.zip', mime: 'application/zip', missing: true, origin: path.join(tmp, 'never-existed.zip') }] };

@@ -1,5 +1,6 @@
 // Copy an item back onto the OS clipboard, so ⌘V works in other apps.
 
+import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { log } from './log.js';
@@ -50,7 +51,12 @@ export async function copyToClipboard(store, meta) {
     mode = 'files';
     args = meta.files
       .map((file, i) => (file.missing ? file.origin : store.filePath(meta, i)))
-      .filter(Boolean);
+      .filter((p) => p && fs.existsSync(p));
+    if (!args.length) {
+      // A reference whose original is gone cannot be pasted; saying "已复制"
+      // here would be a lie the user only discovers in Finder.
+      return { ok: false, error: '原始文件已不存在' };
+    }
   }
 
   if (!args.length) return { ok: false, error: 'nothing to copy' };

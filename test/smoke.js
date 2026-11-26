@@ -11,7 +11,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { execFileSync } from 'node:child_process';
 import { Store, summarize } from '../src/store.js';
+import { sniffImage, sniffImageFile } from '../src/util.js';
+import { copyToClipboard } from '../src/copy.js';
 import { dayKeyBefore } from '../src/util.js';
 
 const ROOT = path.join(import.meta.dirname, '..');
@@ -248,6 +251,50 @@ try {
   });
   ok('index still only served over loopback', hostHeader.status === 200);
 
+  console.log('\nImage bytes and filenames');
+  const tiffMagic = Buffer.from([0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+  equal('sniff: png', sniffImage(PNG_2x2), 'png');
+  equal('sniff: tiff', sniffImage(tiffMagic), 'tiff');
+  equal('sniff: jpeg', sniffImage(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0])), 'jpeg');
+  equal('sniff: unknown', sniffImage(Buffer.from('not an image at all')), null);
+
+  const named = await A.addFiles([{ name: 'quarterly-report.pdf', data: Buffer.from('%PDF-1.4 fake') }]);
+  ok('blob keeps its original filename', named.body.item.files[0].name === 'quarterly-report.pdf'
+    && named.body.item.files[0].stored === undefined, JSON.stringify(named.body.item.files[0]));
+  const onDisk = fs.readdirSync(path.join(dirA, 'items', named.body.item.day, named.body.item.id, 'files'));
+  ok('file on disk is named like the original', onDisk.includes('quarterly-report.pdf'), onDisk.join(','));
+
+  const dupNames = await A.addFiles([
+    { name: 'same.txt', data: Buffer.from('one') },
+    { name: 'same.txt', data: Buffer.from('two') },
+  ]);
+  const dupDisk = fs.readdirSync(path.join(dirA, 'items', dupNames.body.item.day, dupNames.body.item.id, 'files'));
+  ok('duplicate names do not overwrite each other', dupDisk.length === 2, dupDisk.join(','));
+
+  // A file whose extension lies is the exact shape of the blank-preview bug.
+  if (process.platform === 'darwin') {
+    const fakePng = path.join(tmp, 'liar.png');
+    const tiff = path.join(tmp, 'real.tiff');
+    const source = path.join(tmp, 'dot.png');
+    fs.writeFileSync(source, PNG_2x2);
+    try {
+      execFileSync('/usr/bin/sips', ['-s', 'format', 'tiff', source, '--out', tiff], { stdio: 'ignore' });
+      fs.copyFileSync(tiff, fakePng);
+      equal('the fixture really is tiff', sniffImageFile(fakePng), 'tiff');
+      const liars = await A.addFiles([{ name: 'liar.png', data: fs.readFileSync(fakePng) }]);
+      const liar = liars.body.item;
+      ok('mislabeled image becomes a real png', liar.files[0].mime === 'image/png', JSON.stringify(liar.files[0]));
+      const liarDir = path.join(dirA, 'items', liar.day, liar.id, 'files');
+      const storedPath = path.join(liarDir, fs.readdirSync(liarDir)[0]);
+      equal('stored bytes are png', sniffImageFile(storedPath), 'png');
+      ok('dimensions are parsed after conversion', liar.files[0].w > 0 && liar.files[0].h > 0,
+        `${liar.files[0].w}x${liar.files[0].h}`);
+      ok('thumbnail generated for the converted image', liar.thumb === true);
+    } catch (err) {
+      ok('mislabeled image fixture available', false, String(err && err.message));
+    }
+  }
+
   console.log('\nUnreadable sources (protected locations)');
   // A file we can stat but not open is exactly what macOS does for another
   // app's container. chmod 000 reproduces that failure mode portably.
@@ -263,6 +310,9 @@ try {
   ok('no blob path is handed out', refStore.filePath(ref.entry, 0) === null);
   const refSummary = summarize(ref.entry);
   ok('the wire format tells the UI', refSummary.files[0].missing === true && refSummary.missing === 1);
+  const gone = { type: 'files', files: [{ name: 'gone.zip', mime: 'application/zip', missing: true, origin: path.join(tmp, 'never-existed.zip') }] };
+  const deadRef = await copyToClipboard(refStore, gone).catch((err) => ({ ok: false, error: String(err) }));
+  ok('copying a reference whose file is gone fails loudly', deadRef.ok === false, JSON.stringify(deadRef));
 
   const storeDir = path.join(tmp, 'retention');
   const oldDay = dayKeyBefore(45);

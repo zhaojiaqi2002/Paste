@@ -514,6 +514,7 @@ pre.text.mono {
 .image-frame {
   display: block;
   padding: 0;
+  cursor: zoom-in;
   border-radius: 10px;
   overflow: hidden;
   background: var(--bg-input);

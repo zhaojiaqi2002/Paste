@@ -30,7 +30,7 @@
 npm start          # 前台运行，http://127.0.0.1:47810
 npm run open       # 后台运行并打开无边框窗口
 npm run stop       # 停止后台进程
-npm test           # 42 项端到端检查，含双机配对与传输
+npm test           # 55 项端到端检查，含双机配对与传输
 ```
 
 ## 记录什么

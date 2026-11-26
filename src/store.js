@@ -18,8 +18,8 @@ import path from 'node:path';
 import { makeThumb, toPng } from './thumb.js';
 import { search, snippetOf } from './search.js';
 import {
-  classify, dayKey, dayKeyBefore, extOf, imageSize, isDir, mimeOf, newId,
-  readJson, safeName, sha1, writeJsonAtomic,
+  browserImage, classify, dayKey, dayKeyBefore, extOf, imageSize, isDir, mimeOf,
+  newId, readJson, safeName, sha1, sniffImageFile, writeJsonAtomic,
 } from './util.js';
 
 const PREVIEW_CHARS = 2000;
@@ -130,13 +130,27 @@ export class Store extends EventEmitter {
       if (type === 'text') {
         fs.writeFileSync(path.join(dir, 'body.txt'), text, 'utf8');
       } else {
+        const used = new Set();
         let index = 0;
+
+        /** Keep the original filename so pasting elsewhere produces the same name. */
+        const unique = (name) => {
+          const base = safeName(name, `file-${index}`);
+          const dot = base.lastIndexOf('.');
+          const stem = dot > 0 ? base.slice(0, dot) : base;
+          const ext = dot > 0 ? base.slice(dot) : '';
+          let candidate = base;
+          let n = 2;
+          while (used.has(candidate.toLowerCase())) candidate = `${stem}-${n++}${ext}`;
+          used.add(candidate.toLowerCase());
+          return candidate;
+        };
+
         for (const file of files) {
           const original = safeName(file.name || (file.path ? path.basename(file.path) : 'file'));
-          const ext = extOf(original);
           const mime = mimeOf(original);
-          let stored0 = `files/f${index}${ext ? '.' + ext : ''}`;
-          const dest = path.join(dir, stored0);
+          const target = unique(original);
+          const dest = path.join(dir, 'files', target);
 
           // macOS protects other apps' containers, and TCC can protect Desktop,
           // Documents and Downloads. A file we cannot read is still a real
@@ -150,6 +164,7 @@ export class Store extends EventEmitter {
             if (!err || (err.code !== 'EPERM' && err.code !== 'EACCES')) throw err;
             missing = true;
             fs.rmSync(dest, { force: true });
+            used.delete(target.toLowerCase());
           }
 
           if (missing) {
@@ -160,24 +175,49 @@ export class Store extends EventEmitter {
             continue;
           }
 
+          let storedName = target;
+          let finalMime = mime;
           let size = fs.statSync(dest).size;
           let w = null;
           let h = null;
 
           if (mime.startsWith('image/')) {
-            const pngRel = `files/f${index}.png`;
-            const pngAbs = path.join(dir, pngRel);
-            const converted = ext === 'png' ? true : await toPng(dest, pngAbs);
+            const kind = sniffImageFile(dest);
+            let pngAbs = dest;
+            let converted = browserImage(kind);
+
+            if (!converted) {
+              // The real format is not something a browser renders (TIFF from a
+              // pasteboard, BMP, …): convert, then keep a .png name.
+              const stem = target.replace(/\.[^.]+$/, '') || 'image';
+              used.delete(target.toLowerCase());
+              const pngName = unique(`${stem}.png`);
+              const conv = path.join(dir, 'files', `${pngName}.tmp.png`);
+              if (await toPng(dest, conv)) {
+                fs.rmSync(dest, { force: true });
+                const finalAbs = path.join(dir, 'files', pngName);
+                fs.renameSync(conv, finalAbs);
+                pngAbs = finalAbs;
+                storedName = pngName;
+                converted = true;
+              } else {
+                fs.rmSync(conv, { force: true });
+                used.add(target.toLowerCase());
+              }
+            }
+
             if (converted) {
-              if (ext !== 'png') { fs.rmSync(dest, { force: true }); stored0 = pngRel; }
               const buf = fs.readFileSync(pngAbs);
               size = buf.length;
+              finalMime = kind === 'png' ? 'image/png' : finalMime;
               const dims = imageSize(buf);
               if (dims) { w = dims.w; h = dims.h; }
+            } else {
+              finalMime = mimeOf(storedName);
             }
           }
 
-          stored.push({ name: original, stored: stored0, size, mime, w, h });
+          stored.push({ name: storedName, stored: `files/${storedName}`, size, mime: finalMime, w, h });
           index++;
         }
       }

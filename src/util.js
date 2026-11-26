@@ -173,6 +173,45 @@ export function classify(files) {
   return 'files';
 }
 
+// ---------------------------------------------------------------- image sniffing
+
+/**
+ * Identify an image by its magic bytes. A file named .png is not necessarily a
+ * PNG: macOS pasteboards and some apps hand out TIFF data under a png name.
+ * Returns 'png' | 'jpeg' | 'gif' | 'webp' | 'tiff' | 'bmp' | null.
+ */
+export function sniffImage(buf) {
+  if (!buf || buf.length < 12) return null;
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpeg';
+  if (buf.toString('ascii', 0, 3) === 'GIF') return 'gif';
+  if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'webp';
+  const le = buf.toString('latin1', 0, 4);
+  if (le === 'II*\u0000' || le === 'MM\u0000*') return 'tiff';
+  if (buf.toString('ascii', 0, 2) === 'BM') return 'bmp';
+  return null;
+}
+
+/** Sniff a file by reading only its first bytes. */
+export function sniffImageFile(file) {
+  let fd = null;
+  try {
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(16);
+    const read = fs.readSync(fd, buf, 0, 16, 0);
+    return sniffImage(buf.subarray(0, read));
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) { try { fs.closeSync(fd); } catch { /* ignore */ } }
+  }
+}
+
+/** Formats a browser can render directly. */
+export function browserImage(kind) {
+  return kind === 'png' || kind === 'jpeg' || kind === 'gif' || kind === 'webp';
+}
+
 // ---------------------------------------------------------------- image size
 
 /** Read pixel dimensions from a PNG/JPEG/GIF/WebP header without decoding. */

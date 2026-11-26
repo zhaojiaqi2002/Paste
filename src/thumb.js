@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { extOf, exists } from './util.js';
+import { exists, sniffImageFile } from './util.js';
 
 const PS_RESIZE = path.join(import.meta.dirname, 'resize.ps1');
 
@@ -30,13 +30,16 @@ function run(cmd, args, timeout = 15000) {
   });
 }
 
-/** Normalise any raster the OS can read into a PNG next to the original. */
+/**
+ * Normalise any raster the OS can read into a real PNG. The decision is made on
+ * the file's magic bytes, never on its name: a .png that actually holds TIFF is
+ * exactly the case that produced blank previews in the browser.
+ */
 export async function toPng(src, dest) {
-  if (extOf(src) === 'png' && path.resolve(src) !== path.resolve(dest)) {
-    fs.copyFileSync(src, dest);
+  if (sniffImageFile(src) === 'png') {
+    if (path.resolve(src) !== path.resolve(dest)) fs.copyFileSync(src, dest);
     return true;
   }
-  if (extOf(src) === 'png') return true;
 
   if (process.platform === 'darwin' && exists('/usr/bin/sips')) {
     return run('/usr/bin/sips', ['-s', 'format', 'png', src, '--out', dest]);

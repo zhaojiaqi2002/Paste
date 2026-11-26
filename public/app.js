@@ -474,6 +474,11 @@ function renderDetail() {
       alt: file.name || '',
     });
     const frame = el('button', { class: 'image-frame', type: 'button', 'aria-label': '查看大图', onclick: () => openLightbox(img.src) }, img);
+    // A blob the browser cannot decode must not leave a blank frame behind.
+    img.addEventListener('error', () => {
+      if (S.selectedId !== item.id) return;
+      body.replaceChildren(fileList(item));
+    });
     body.append(frame);
     const caption = [file.w && file.h ? `${file.w} × ${file.h}` : null, bytes(file.size), item.files.length > 1 ? `${item.files.length} 张` : null]
       .filter(Boolean).join('  ·  ');
@@ -487,7 +492,12 @@ function renderDetail() {
   } else if (item.type === 'video' && item.files[0] && item.files[0].missing) {
     body.append(fileList(item));
   } else if (item.type === 'video') {
-    body.append(el('video', { src: `/api/items/${item.id}/file/0`, controls: true, preload: 'metadata' }));
+    const video = el('video', { src: `/api/items/${item.id}/file/0`, controls: true, preload: 'metadata' });
+    video.addEventListener('error', () => {
+      if (S.selectedId !== item.id) return;
+      body.replaceChildren(fileList(item));
+    });
+    body.append(video);
     if (item.files.length > 1) {
       const rest = fileList(item);
       rest.style.marginTop = '18px';
@@ -536,7 +546,7 @@ async function copyItem(item) {
     const res = await fetch(`/api/items/${item.id}/copy`, { method: 'POST' });
     const data = await res.json();
     if (data.ok) toast('已复制');
-    else toast('复制失败');
+    else toast(data.error || '复制失败');
   } catch {
     toast('复制失败');
   }

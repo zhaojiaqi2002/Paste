@@ -311,7 +311,7 @@ export function createServer({ config, dataDir, store, bundles, lan, capture, sa
       }
       if (filePaths.length) {
         const result = await copyRaw('files', filePaths);
-        if (result.ok && capture) capture.ignoreNext('files');
+        if (result.ok && capture) capture.ignoreNext(['files', 'image']);
         return json(res, result.ok ? 200 : 500, {
           ...result,
           mode: 'files',
@@ -326,7 +326,7 @@ export function createServer({ config, dataDir, store, bundles, lan, capture, sa
       fs.writeFileSync(tmp, texts.join('\n\n'), 'utf8');
       const result = await copyRaw('text', [tmp]);
       fs.rmSync(tmp, { force: true });
-      if (result.ok && capture) capture.ignoreNext('text');
+      if (result.ok && capture) capture.ignoreNext(['text']);
       return json(res, result.ok ? 200 : 500, { ...result, mode: 'text', count: texts.length });
     }
 
@@ -352,6 +352,17 @@ export function createServer({ config, dataDir, store, bundles, lan, capture, sa
         return json(res, 200, { item });
       }
 
+      if (rest.length === 2 && method === 'PATCH') {
+        const body = await readJson(req, 8192);
+        const note = String(body.note == null ? '' : body.note)
+          .replace(/[\u0000-\u001f]/g, ' ')
+          .trim()
+          .slice(0, 500);
+        const updated = store.setNote(id, note);
+        broadcast('update', summarize(updated));
+        return json(res, 200, { ok: true, item: summarize(updated) });
+      }
+
       if (rest.length === 2 && method === 'DELETE') {
         const removed = store.remove(id);
         if (!removed) return json(res, 404, { error: 'not found' });
@@ -361,7 +372,11 @@ export function createServer({ config, dataDir, store, bundles, lan, capture, sa
 
       if (rest[2] === 'copy' && method === 'POST') {
         const result = await copyToClipboard(store, meta);
-        if (result.ok && capture) capture.ignoreNext(meta.type === 'text' ? 'text' : meta.type === 'image' ? 'image' : 'files');
+        // An image is written as pixels plus a file URL, so the watcher may
+        // report either shape; ignore both.
+        if (result.ok && capture) {
+          capture.ignoreNext(meta.type === 'text' ? ['text'] : meta.type === 'image' ? ['image', 'files'] : ['files']);
+        }
         return json(res, result.ok ? 200 : 500, result);
       }
 

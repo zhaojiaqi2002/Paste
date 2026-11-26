@@ -44,18 +44,21 @@ export function createCapture({ store, dataDir, config }) {
   let stopping = false;
   let restartTimer = null;
   let backoff = 500;
-  let ignore = { type: null, until: 0 };
+  // Our own clipboard writes can arrive in more than one shape: an image is
+  // written as pixels *and* a file URL, so the watcher reports it as files.
+  // Ignore any of the shapes a single copy can produce.
+  let ignore = { types: null, until: 0 };
 
-  function ignoreNext(type, ms = 2500) {
-    ignore = { type, until: Date.now() + ms };
+  function ignoreNext(types, ms = 1500) {
+    const list = Array.isArray(types) ? types : [types];
+    ignore = { types: new Set(list), until: Date.now() + ms };
   }
 
   function takeIgnore(type) {
-    if (ignore.type && ignore.type === type && Date.now() < ignore.until) {
-      ignore = { type: null, until: 0 };
-      return true;
-    }
-    return false;
+    if (!ignore.types || Date.now() > ignore.until) return false;
+    if (!ignore.types.has(type)) return false;
+    ignore = { types: null, until: 0 };
+    return true;
   }
 
   function command() {

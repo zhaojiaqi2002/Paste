@@ -57,8 +57,10 @@ export async function copyRaw(mode, paths) {
   // macOS drops file flavors whose file this process cannot read, which would
   // leave the clipboard empty while reporting success. Refuse up front instead,
   // and leave whatever the user already had on the clipboard untouched.
-  const usable = paths.filter(readable);
-  const skipped = paths.length - usable.length;
+  // A path repeated in one copy makes Finder paste the same file twice.
+  const unique = [...new Set(paths)];
+  const usable = unique.filter(readable);
+  const skipped = unique.length - usable.length;
   if (!usable.length) {
     return {
       ok: false,

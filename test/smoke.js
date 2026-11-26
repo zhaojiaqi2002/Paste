@@ -358,6 +358,24 @@ try {
   ok('original name and size are kept', ref.entry && ref.entry.files[0].name === 'locked.png' && ref.entry.files[0].size > 0,
     JSON.stringify(ref.entry && ref.entry.files[0]));
   ok('no blob path is handed out', refStore.filePath(ref.entry, 0) === null);
+  console.log('\nNotes');
+  const noteTarget = await A.addText('note target item');
+  const noteId = noteTarget.body.item.id;
+  const patched = await A.json(`/api/items/${noteId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ note: '评审稿 v2' }),
+  });
+  equal('note is saved', patched.body.item.note, '评审稿 v2');
+  const noteMeta = path.join(dirA, 'items', patched.body.item.day, noteId, 'meta.json');
+  ok('note is written into meta.json', fs.readFileSync(noteMeta, 'utf8').includes('评审稿 v2'));
+  const byNote = await A.json(`/api/items?q=${encodeURIComponent('评审稿')}`);
+  ok('notes are searchable', byNote.body.items.some((item) => item.id === noteId), JSON.stringify(byNote.body.total));
+  const cleared = await A.json(`/api/items/${noteId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ note: '' }),
+  });
+  equal('note can be cleared', cleared.body.item.note, '');
+
   const videoRef = path.join(tmp, 'lock-video.mp4');
   fs.writeFileSync(videoRef, 'video bytes');
   fs.chmodSync(videoRef, 0o000);

@@ -289,7 +289,8 @@ function rowFor(item) {
     },
     el('span', { class: 'check', role: 'checkbox', 'aria-checked': String(selected) }, icon('check')),
     media,
-    el('div', { class: 'row-main' }, title, sub),
+    el('div', { class: 'row-main' }, title, sub,
+      item.note ? el('div', { class: 'row-note' }, item.note) : null),
     S.collapsed ? el('div', { class: 'row-actions' },
       el('button', {
         class: 'act',
@@ -399,7 +400,7 @@ function select(id, options = {}) {
   S.focusId = id || null;
   setSelection(id ? [id] : [], { anchor: id || null });
   if (options.scroll !== false && id) scrollRowIntoView(id);
-  if (options.open) $('#split').classList.add('detail-open');
+  if (options.open && !S.collapsed) $('#split').classList.add('detail-open');
 }
 
 function toggleSelect(id) {
@@ -502,6 +503,42 @@ function metaLine(item) {
   return node;
 }
 
+function noteField(item) {
+  const input = el('input', {
+    class: 'note-input',
+    type: 'text',
+    value: item.note || '',
+    placeholder: '备注',
+    maxlength: '500',
+    spellcheck: 'false',
+    'aria-label': '备注',
+  });
+  const commit = async () => {
+    const value = input.value.trim();
+    if (value === (item.note || '')) return;
+    try {
+      const res = await fetch(`/api/items/${item.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ note: value }),
+      });
+      const data = await res.json();
+      if (data.item) patchItem(data.item);
+    } catch {
+      toast('备注保存失败');
+    }
+  };
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') input.blur();
+    if (event.key === 'Escape') {
+      input.value = item.note || '';
+      input.blur();
+    }
+  });
+  return el('div', { class: 'note-row' }, input);
+}
+
 function fileRow(item, index) {
   const file = item.files[index] || {};
   const chip = el('span', { class: 'file-chip' }, extOf(file.name).slice(0, 4));
@@ -550,7 +587,10 @@ function patchItem(item) {
   if (index < 0) return;
   S.items[index] = item;
   renderList();
-  if (S.selectedId === item.id) renderDetail();
+  // Never rebuild the detail under someone's cursor while they type a note.
+  if (S.selectedId === item.id && !document.activeElement?.classList.contains('note-input')) {
+    renderDetail();
+  }
 }
 
 function fileList(item) {
@@ -666,6 +706,7 @@ function renderDetail() {
   );
 
   const body = el('div', { class: 'detail-body' });
+  body.append(noteField(item));
 
   if (item.type === 'text') {
     body.classList.add('text');

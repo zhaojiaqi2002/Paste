@@ -343,7 +343,7 @@ export class Store extends EventEmitter {
       } catch { /* keep the preview */ }
     }
     const typeLabel = { text: '文本', image: '图片', files: '文件', video: '视频' }[meta.type] || '';
-    const hay = `${text}\n${(meta.files || []).map((f) => f.name).join('\n')}\n${meta.day} ${typeLabel}`.toLowerCase();
+    const hay = `${text}\n${meta.note || ''}\n${(meta.files || []).map((f) => f.name).join('\n')}\n${meta.day} ${typeLabel}`.toLowerCase();
     if (this.hayCache.size > 800) this.hayCache.delete(this.hayCache.keys().next().value);
     this.hayCache.set(meta.id, hay);
     return hay;
@@ -443,6 +443,19 @@ export class Store extends EventEmitter {
     }
     writeJsonAtomic(path.join(dir, 'meta.json'), meta);
     this.hayCache.delete(meta.id);
+    this.emit('update', meta);
+    return meta;
+  }
+
+  /** A short annotation the user attaches to an item. Lives in meta.json. */
+  setNote(id, note) {
+    const meta = this.byId.get(id);
+    if (!meta) return null;
+    const clean = String(note == null ? '' : note).trim().slice(0, 500);
+    if (clean) meta.note = clean;
+    else delete meta.note;
+    writeJsonAtomic(path.join(this.itemDir(meta), 'meta.json'), meta);
+    this.hayCache.delete(id);
     this.emit('update', meta);
     return meta;
   }
@@ -582,6 +595,7 @@ export function summarize(meta) {
     })),
     thumb: !!meta.thumb,
     poster: !!meta.poster,
+    note: meta.note || '',
     missing: meta.missing || 0,
   };
 }

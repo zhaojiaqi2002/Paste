@@ -179,6 +179,8 @@ test/smoke.js            端到端：两个真实进程、真实配对、真实�
 
 调试环境变量：`PASTE_DATA`（数据目录）、`PASTE_PORT`、`PASTE_NO_CAPTURE=1`（不记录剪贴板）、`PASTE_NAME`、`PASTE_DEBUG=1`。
 
+`npm test` 会真的写入系统剪贴板——它验证的是完整复制链路。所以跑测试时，正在运行的 Paste 会把测试用的临时文件记进历史；测完清一下即可。
+
 界面改完用这个确认视觉效果：
 
 ```bash
